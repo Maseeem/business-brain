@@ -342,3 +342,78 @@ def format_sources(results: List[Dict]) -> List[Dict]:
 
 def format_context(results):
     return build_context(results)
+def ingest_knowledge_file(source_id: int, file_data) -> int:
+    """
+    Read an uploaded knowledge file and index its text.
+    """
+    filename = getattr(file_data, "name", "").lower()
+
+    if filename.endswith((".txt", ".md")):
+        text = file_data.getvalue().decode("utf-8", errors="ignore")
+
+    elif filename.endswith(".csv"):
+        text = file_data.getvalue().decode("utf-8", errors="ignore")
+
+    else:
+        raise ValueError(
+            f"Unsupported file type: {filename}"
+        )
+
+    return ingest_text_knowledge(
+        source_id=source_id,
+        text=text,
+    )
+
+
+def index_process(process_id: int) -> int:
+    """
+    Index a saved process so it can be retrieved by Business Brain.
+    """
+    from database import get_process
+
+    process = get_process(process_id)
+
+    if not process:
+        raise ValueError("Process not found.")
+
+    parts = []
+
+    for key in [
+        "name",
+        "purpose",
+        "trigger",
+        "inputs",
+        "roles",
+        "steps",
+        "decisions",
+        "output",
+        "exceptions",
+        "warnings",
+        "tools",
+    ]:
+        value = process.get(key)
+
+        if value:
+            parts.append(f"{key}: {value}")
+
+    text = "\n".join(parts)
+
+    if not text.strip():
+        raise ValueError("Process does not contain readable content.")
+
+    return ingest_text_knowledge(
+        source_id=process_id,
+        text=text,
+    )
+
+
+def bootstrap_index() -> None:
+    """
+    Rebuild the retrieval index from existing knowledge.
+    """
+    chunks = list_chunks()
+
+    # The MVP stores chunks directly in SQLite,
+    # so existing chunks are already available for retrieval.
+    # This function is kept for app compatibility.
+    return None
