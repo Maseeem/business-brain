@@ -340,6 +340,5 @@ def format_sources(results: List[Dict]) -> List[Dict]:
 
     return sources
 
-    def format_context(results):
+def format_context(results):
     return build_context(results)
-    return build_context(res return build_context(results) return build_context(results)ults)
