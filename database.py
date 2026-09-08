@@ -1,7 +1,7 @@
 import sqlite3
 import json
 from datetime import datetime
-from pathlib import Path
+from pathlib import Pat
 
 DB_PATH = Path("business_brain.db")
 
@@ -694,6 +694,8 @@ def log_activity(action, details=""):
 
 
 def list_activity(limit=50):
+    def get_activity(limit=50):
+    return list_activity(limit)
     conn = get_connection()
 
     rows = conn.execute(
