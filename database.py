@@ -1,710 +1,288 @@
-from __future__ import annotations
-
-import os
+import json
 import sqlite3
-from typing import Any, Dict, List, Optional
+from datetime import datetime
+from pathlib import Path
 
+DB_PATH = Path("business_brain.db")
 
-DB_PATH = os.getenv("BUSINESS_BRAIN_DB", "business_brain.db")
+def _conn():
+    c = sqlite3.connect(DB_PATH)
+    c.row_factory = sqlite3.Row
+    return c
 
-
-def get_connection():
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
-
+def _ensure_columns(c, table, columns):
+    existing = {row[1] for row in c.execute(f"PRAGMA table_info({table})").fetchall()}
+    for name, definition in columns.items():
+        if name not in existing:
+            c.execute(f"ALTER TABLE {table} ADD COLUMN {name} {definition}")
 
 def init_db():
-    conn = get_connection()
-    cur = conn.cursor()
-
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS businesses (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT NOT NULL,
-            description TEXT DEFAULT '',
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
+    c = _conn()
+    c.executescript("""
+    CREATE TABLE IF NOT EXISTS businesses (
+        id INTEGER PRIMARY KEY, name TEXT NOT NULL, profile TEXT DEFAULT '', created_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS processes (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, business_id INTEGER NOT NULL DEFAULT 1, name TEXT NOT NULL DEFAULT 'Untitled Process',
+        description TEXT DEFAULT '', category TEXT DEFAULT 'Operations', owner TEXT DEFAULT 'Business Owner', status TEXT DEFAULT 'Active',
+        trigger TEXT DEFAULT '', inputs_json TEXT DEFAULT '[]', roles_json TEXT DEFAULT '[]', steps_json TEXT DEFAULT '[]',
+        decisions_json TEXT DEFAULT '[]', exceptions_json TEXT DEFAULT '[]', output TEXT DEFAULT '', tags_json TEXT DEFAULT '[]',
+        created_at TEXT DEFAULT '', updated_at TEXT DEFAULT ''
+    );
+    CREATE TABLE IF NOT EXISTS knowledge (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, business_id INTEGER NOT NULL DEFAULT 1, title TEXT NOT NULL DEFAULT 'Untitled knowledge',
+        type TEXT DEFAULT 'Document', description TEXT DEFAULT '', source TEXT DEFAULT '', status TEXT DEFAULT 'Indexed',
+        tags_json TEXT DEFAULT '[]', content TEXT DEFAULT '', created_at TEXT DEFAULT '', updated_at TEXT DEFAULT ''
+    );
+    CREATE TABLE IF NOT EXISTS chunks (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, business_id INTEGER NOT NULL DEFAULT 1, source_type TEXT NOT NULL DEFAULT 'knowledge',
+        source_id INTEGER NOT NULL DEFAULT 0, title TEXT NOT NULL DEFAULT 'Untitled source', content TEXT NOT NULL DEFAULT '',
+        metadata_json TEXT DEFAULT '{}', created_at TEXT DEFAULT ''
+    );
+    CREATE TABLE IF NOT EXISTS activity (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, business_id INTEGER NOT NULL DEFAULT 1, action TEXT NOT NULL DEFAULT '',
+        details TEXT DEFAULT '', created_at TEXT DEFAULT ''
+    );
     """)
 
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS processes (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            business_id INTEGER NOT NULL,
-            name TEXT NOT NULL,
-            purpose TEXT DEFAULT '',
-            trigger TEXT DEFAULT '',
-            inputs TEXT DEFAULT '',
-            roles TEXT DEFAULT '',
-            steps TEXT DEFAULT '',
-            decisions TEXT DEFAULT '',
-            output TEXT DEFAULT '',
-            exceptions TEXT DEFAULT '',
-            warnings TEXT DEFAULT '',
-            tools TEXT DEFAULT '',
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
+    # Migrate older MVP databases created before the final schema.
+    _ensure_columns(c, "processes", {
+        "business_id": "INTEGER NOT NULL DEFAULT 1", "description": "TEXT DEFAULT ''", "category": "TEXT DEFAULT 'Operations'",
+        "owner": "TEXT DEFAULT 'Business Owner'", "status": "TEXT DEFAULT 'Active'", "trigger": "TEXT DEFAULT ''",
+        "inputs_json": "TEXT DEFAULT '[]'", "roles_json": "TEXT DEFAULT '[]'", "steps_json": "TEXT DEFAULT '[]'",
+        "decisions_json": "TEXT DEFAULT '[]'", "exceptions_json": "TEXT DEFAULT '[]'", "output": "TEXT DEFAULT ''",
+        "tags_json": "TEXT DEFAULT '[]'", "created_at": "TEXT DEFAULT ''", "updated_at": "TEXT DEFAULT ''"})
+    _ensure_columns(c, "knowledge", {
+        "business_id": "INTEGER NOT NULL DEFAULT 1", "type": "TEXT DEFAULT 'Document'", "description": "TEXT DEFAULT ''",
+        "source": "TEXT DEFAULT ''", "status": "TEXT DEFAULT 'Indexed'", "tags_json": "TEXT DEFAULT '[]'",
+        "content": "TEXT DEFAULT ''", "created_at": "TEXT DEFAULT ''", "updated_at": "TEXT DEFAULT ''"})
+    _ensure_columns(c, "chunks", {
+        "business_id": "INTEGER NOT NULL DEFAULT 1", "source_type": "TEXT NOT NULL DEFAULT 'knowledge'",
+        "source_id": "INTEGER NOT NULL DEFAULT 0", "title": "TEXT NOT NULL DEFAULT 'Untitled source'",
+        "content": "TEXT NOT NULL DEFAULT ''", "metadata_json": "TEXT DEFAULT '{}'", "created_at": "TEXT DEFAULT ''"})
+    _ensure_columns(c, "activity", {
+        "business_id": "INTEGER NOT NULL DEFAULT 1", "action": "TEXT NOT NULL DEFAULT ''",
+        "details": "TEXT DEFAULT ''", "created_at": "TEXT DEFAULT ''"})
 
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS knowledge (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            business_id INTEGER NOT NULL,
-            title TEXT NOT NULL,
-            type TEXT DEFAULT 'Note',
-            description TEXT DEFAULT '',
-            content TEXT DEFAULT '',
-            source TEXT DEFAULT '',
-            status TEXT DEFAULT 'Active',
-            tags TEXT DEFAULT '',
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
-
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS chunks (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            source_id INTEGER NOT NULL,
-            chunk_index INTEGER NOT NULL,
-            content TEXT NOT NULL,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
-
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS activity (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            business_id INTEGER NOT NULL,
-            action TEXT NOT NULL,
-            details TEXT DEFAULT '',
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
-
-    conn.commit()
-    conn.close()
-
+    c.commit()
+    c.close()
 
 def seed_demo_data():
-    conn = get_connection()
-    cur = conn.cursor()
-
-    business = cur.execute(
-        "SELECT id FROM businesses LIMIT 1"
-    ).fetchone()
-
-    if business:
-        business_id = business["id"]
-    else:
-        cur.execute(
-            """
-            INSERT INTO businesses (name, description)
-            VALUES (?, ?)
-            """,
-            (
-                "Nova Bakery",
-                "A demo bakery business used to demonstrate Business Brain.",
-            ),
-        )
-        business_id = cur.lastrowid
-
-    process_count = cur.execute(
-        "SELECT COUNT(*) AS count FROM processes WHERE business_id = ?",
-        (business_id,),
-    ).fetchone()["count"]
-
-    if process_count == 0:
-        demo_processes = [
-            {
-                "name": "New Customer Order",
-                "purpose": "Process a standard bakery customer order.",
-                "trigger": "Customer requests bakery products.",
-                "inputs": "Customer name, contact details, product, quantity, required date.",
-                "roles": "Customer, bakery staff.",
-                "steps": [
-                    "Receive the customer request.",
-                    "Confirm product and quantity.",
-                    "Check required date and availability.",
-                    "Confirm price with the customer.",
-                    "Record the order.",
-                    "Confirm the order with the customer."
-                ],
-                "decisions": [
-                    "Is the requested product available?",
-                    "Can the requested date be fulfilled?"
-                ],
-                "output": "Confirmed customer order.",
-                "exceptions": [
-                    "Requested product unavailable.",
-                    "Requested date unavailable."
-                ],
-                "warnings": "Confirm important order details before final confirmation.",
-                "tools": "Order record and customer communication."
-            },
-            {
-                "name": "Custom Cake Order",
-                "purpose": "Handle custom cake requests.",
-                "trigger": "Customer requests a custom cake.",
-                "inputs": "Cake size, flavor, design, message, event date, customer details.",
-                "roles": "Customer, bakery staff, cake decorator.",
-                "steps": [
-                    "Collect cake requirements.",
-                    "Confirm design and flavor.",
-                    "Confirm availability for the event date.",
-                    "Calculate the price.",
-                    "Collect the required advance payment.",
-                    "Confirm the order."
-                ],
-                "decisions": [
-                    "Is the requested design possible?",
-                    "Is the event date available?"
-                ],
-                "output": "Confirmed custom cake order.",
-                "exceptions": [
-                    "Design cannot be fulfilled.",
-                    "Date is unavailable."
-                ],
-                "warnings": "Custom cake orders require a 50% advance payment.",
-                "tools": "Order record and customer communication."
-            },
-            {
-                "name": "Inventory Restocking",
-                "purpose": "Restock ingredients and bakery supplies.",
-                "trigger": "Inventory falls below the required level.",
-                "inputs": "Current stock, minimum stock level, supplier information.",
-                "roles": "Bakery staff, supplier.",
-                "steps": [
-                    "Check current inventory.",
-                    "Identify items below minimum level.",
-                    "Prepare the restocking list.",
-                    "Contact supplier.",
-                    "Place the order.",
-                    "Update inventory after delivery."
-                ],
-                "decisions": [
-                    "Is the item below the minimum stock level?",
-                    "Is the supplier able to provide the item?"
-                ],
-                "output": "Restocked inventory.",
-                "exceptions": [
-                    "Supplier cannot provide an item.",
-                    "Delivery is delayed."
-                ],
-                "warnings": "Check stock before placing duplicate orders.",
-                "tools": "Inventory records and supplier information."
-            },
-            {
-                "name": "Customer Complaint Handling",
-                "purpose": "Handle customer complaints consistently.",
-                "trigger": "Customer submits a complaint.",
-                "inputs": "Customer details, order details, complaint description.",
-                "roles": "Customer, bakery staff, manager.",
-                "steps": [
-                    "Receive the complaint.",
-                    "Review the order details.",
-                    "Understand the issue.",
-                    "Determine the appropriate resolution.",
-                    "Communicate the resolution to the customer.",
-                    "Record the outcome."
-                ],
-                "decisions": [
-                    "Does the complaint qualify for a refund or replacement?",
-                    "Does the issue require manager review?"
-                ],
-                "output": "Resolved and recorded complaint.",
-                "exceptions": [
-                    "Complaint requires manager approval."
-                ],
-                "warnings": "Follow the refund policy when offering refunds.",
-                "tools": "Order records and customer communication."
-            },
-        ]
-
-        for p in demo_processes:
-            cur.execute(
-                """
-                INSERT INTO processes (
-                    business_id,
-                    name,
-                    purpose,
-                    trigger,
-                    inputs,
-                    roles,
-                    steps,
-                    decisions,
-                    output,
-                    exceptions,
-                    warnings,
-                    tools
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    business_id,
-                    p["name"],
-                    p["purpose"],
-                    p["trigger"],
-                    p["inputs"],
-                    p["roles"],
-                    "\n".join(
-                        f"{i + 1}. {step}"
-                        for i, step in enumerate(p["steps"])
-                    ),
-                    "\n".join(
-                        f"- {item}"
-                        for item in p["decisions"]
-                    ),
-                    p["output"],
-                    "\n".join(
-                        f"- {item}"
-                        for item in p["exceptions"]
-                    ),
-                    p["warnings"],
-                    p["tools"],
-                ),
-            )
-
-    knowledge_count = cur.execute(
-        "SELECT COUNT(*) AS count FROM knowledge WHERE business_id = ?",
-        (business_id,),
-    ).fetchone()["count"]
-
-    if knowledge_count == 0:
-        demo_knowledge = [
-            (
-                "Customer Service Policy",
-                "Policy",
-                "Basic customer service guidelines.",
-                "Customers should be treated respectfully and staff should confirm important order details before finalizing an order.",
-                "Nova Bakery",
-                "Active",
-                "customer,service,policy",
-            ),
-            (
-                "Pricing Guide",
-                "Guide",
-                "Basic pricing guidance.",
-                "Prices should be confirmed with the customer before an order is finalized. Custom products may have additional charges.",
-                "Nova Bakery",
-                "Active",
-                "pricing,orders",
-            ),
-            (
-                "Order Requirements",
-                "Policy",
-                "Information required for customer orders.",
-                "Orders should include customer contact details, product or cake requirements, quantity, and required date.",
-                "Nova Bakery",
-                "Active",
-                "orders,requirements",
-            ),
-            (
-                "Refund Policy",
-                "Policy",
-                "Guidelines for handling refunds.",
-                "Refund requests should be reviewed against the order details and applicable bakery policy. Escalate unusual cases to the manager.",
-                "Nova Bakery",
-                "Active",
-                "refund,customer,policy",
-            ),
-        ]
-
-        for item in demo_knowledge:
-            cur.execute(
-                """
-                INSERT INTO knowledge (
-                    business_id,
-                    title,
-                    type,
-                    description,
-                    content,
-                    source,
-                    status,
-                    tags
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    business_id,
-                    item[0],
-                    item[1],
-                    item[2],
-                    item[3],
-                    item[4],
-                    item[5],
-                    item[6],
-                ),
-            )
-
-    conn.commit()
-    conn.close()
-
-
-def get_business(business_id: int = 1) -> Optional[Dict[str, Any]]:
-    conn = get_connection()
-
-    row = conn.execute(
-        """
-        SELECT *
-        FROM businesses
-        WHERE id = ?
-        """,
-        (business_id,),
-    ).fetchone()
-
-    conn.close()
-
-    return dict(row) if row else None
-
-
-def list_processes(
-    business_id: int = 1,
-) -> List[Dict[str, Any]]:
-    conn = get_connection()
-
-    rows = conn.execute(
-        """
-        SELECT *
-        FROM processes
-        WHERE business_id = ?
-        ORDER BY updated_at DESC, id DESC
-        """,
-        (business_id,),
-    ).fetchall()
-
-    conn.close()
-
-    return [dict(row) for row in rows]
-
-
-def get_process(
-    process_id: int,
-) -> Optional[Dict[str, Any]]:
-    conn = get_connection()
-
-    row = conn.execute(
-        """
-        SELECT *
-        FROM processes
-        WHERE id = ?
-        """,
-        (process_id,),
-    ).fetchone()
-
-    conn.close()
-
-    return dict(row) if row else None
-
-
-def create_process(
-    business_id: int,
-    sop: Dict[str, Any],
-) -> int:
-
-    conn = get_connection()
-
-    cur = conn.cursor()
-
-    def as_text(value):
-        if isinstance(value, list):
-            return "\n".join(
-                f"{i + 1}. {item}"
-                for i, item in enumerate(value)
-            )
-
-        if isinstance(value, dict):
-            return "\n".join(
-                f"{key}: {val}"
-                for key, val in value.items()
-            )
-
-        return str(value or "")
-
-    cur.execute(
-        """
-        INSERT INTO processes (
-            business_id,
-            name,
-            purpose,
-            trigger,
-            inputs,
-            roles,
-            steps,
-            decisions,
-            output,
-            exceptions,
-            warnings,
-            tools
-        )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            business_id,
-            sop.get("name", "Untitled Process"),
-            as_text(sop.get("purpose")),
-            as_text(sop.get("trigger")),
-            as_text(sop.get("inputs")),
-            as_text(sop.get("roles")),
-            as_text(sop.get("steps")),
-            as_text(sop.get("decisions")),
-            as_text(sop.get("output")),
-            as_text(sop.get("exceptions")),
-            as_text(sop.get("warnings")),
-            as_text(sop.get("tools")),
-        ),
-    )
-
-    process_id = cur.lastrowid
-
-    conn.commit()
-    conn.close()
-
-    return int(process_id)
-
-
-def create_knowledge(
-    business_id: int,
-    title: str,
-    type: str = "Note",
-    description: str = "",
-    content: str = "",
-    source: str = "",
-    status: str = "Active",
-    tags: str = "",
-) -> int:
-
-    conn = get_connection()
-
-    cur = conn.cursor()
-
-    cur.execute(
-        """
-        INSERT INTO knowledge (
-            business_id,
-            title,
-            type,
-            description,
-            content,
-            source,
-            status,
-            tags
-        )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            business_id,
-            title,
-            type,
-            description,
-            content,
-            source,
-            status,
-            tags,
-        ),
-    )
-
-    knowledge_id = cur.lastrowid
-
-    conn.commit()
-    conn.close()
-
-    return int(knowledge_id)
-
-
-def get_knowledge(
-    knowledge_id: int,
-) -> Optional[Dict[str, Any]]:
-    conn = get_connection()
-
-    row = conn.execute(
-        """
-        SELECT *
-        FROM knowledge
-        WHERE id = ?
-        """,
-        (knowledge_id,),
-    ).fetchone()
-
-    conn.close()
-
-    return dict(row) if row else None
-
-
-def list_knowledge(
-    business_id: int = 1,
-) -> List[Dict[str, Any]]:
-    conn = get_connection()
-
-    rows = conn.execute(
-        """
-        SELECT *
-        FROM knowledge
-        WHERE business_id = ?
-        ORDER BY created_at DESC, id DESC
-        """,
-        (business_id,),
-    ).fetchall()
-
-    conn.close()
-
-    return [dict(row) for row in rows]
-
-
-def add_chunk(
-    source_id: int,
-    chunk_index: int,
-    content: str,
-) -> int:
-
-    conn = get_connection()
-
-    cur = conn.cursor()
-
-    cur.execute(
-        """
-        INSERT INTO chunks (
-            source_id,
-            chunk_index,
-            content
-        )
-        VALUES (?, ?, ?)
-        """,
-        (
-            source_id,
-            chunk_index,
-            content,
-        ),
-    )
-
-    chunk_id = cur.lastrowid
-
-    conn.commit()
-    conn.close()
-
-    return int(chunk_id)
-
-
-def delete_chunks_for_source(
-    source_id: int,
-):
-    conn = get_connection()
-
-    conn.execute(
-        """
-        DELETE FROM chunks
-        WHERE source_id = ?
-        """,
-        (source_id,),
-    )
-
-    conn.commit()
-    conn.close()
-
-
-def list_chunks(
-    source_id: Optional[int] = None,
-) -> List[Dict[str, Any]]:
-
-    conn = get_connection()
-
-    if source_id is None:
-        rows = conn.execute(
-            """
-            SELECT
-                chunks.*,
-                knowledge.title,
-                knowledge.type
-            FROM chunks
-            LEFT JOIN knowledge
-                ON knowledge.id = chunks.source_id
-            ORDER BY chunks.source_id, chunks.chunk_index
-            """
-        ).fetchall()
-    else:
-        rows = conn.execute(
-            """
-            SELECT
-                chunks.*,
-                knowledge.title,
-                knowledge.type
-            FROM chunks
-            LEFT JOIN knowledge
-                ON knowledge.id = chunks.source_id
-            WHERE chunks.source_id = ?
-            ORDER BY chunks.chunk_index
-            """,
-            (source_id,),
-        ).fetchall()
-
-    conn.close()
-
-    return [dict(row) for row in rows]
-
-
-def log_activity(
-    business_id: int,
-    action: str,
-    details: str = "",
-):
-    conn = get_connection()
-
-    conn.execute(
-        """
-        INSERT INTO activity (
-            business_id,
-            action,
-            details
-        )
-        VALUES (?, ?, ?)
-        """,
-        (
-            business_id,
-            action,
-            details,
-        ),
-    )
-
-    conn.commit()
-    conn.close()
-
-
-def list_activity(
-    business_id: int = 1,
-    limit: int = 50,
-) -> List[Dict[str, Any]]:
-
-    conn = get_connection()
-
-    rows = conn.execute(
-        """
-        SELECT *
-        FROM activity
-        WHERE business_id = ?
-        ORDER BY created_at DESC, id DESC
-        LIMIT ?
-        """,
-        (
-            business_id,
-            limit,
-        ),
-    ).fetchall()
-
-    conn.close()
-
-    return [dict(row) for row in rows]
-
-
-def get_activity(
-    business_id: int = 1,
-    limit: int = 50,
-) -> List[Dict[str, Any]]:
-    return list_activity(
-        business_id=business_id,
-        limit=limit,
-    )
-
-
-# Initialize database when the module is loaded.
-init_db()
-seed_demo_data()
+    c = _conn()
+    existing = c.execute("SELECT COUNT(*) FROM businesses").fetchone()[0]
+    if existing:
+        c.close()
+        return
+
+    now = datetime.now().isoformat(timespec="seconds")
+    c.execute("INSERT INTO businesses (id,name,profile,created_at) VALUES (1,?,?,?)",
+              ("Nova Bakery", "A neighborhood bakery specializing in fresh bread, celebration cakes, and custom orders.", now))
+
+    demo_processes = [
+        {
+            "name": "New Customer Order",
+            "description": "Standard workflow for receiving, validating and routing customer orders.",
+            "category": "Sales",
+            "trigger": "A customer submits an order by phone, message, walk-in, or approved order channel.",
+            "inputs": ["Customer name and contact", "Items requested", "Quantity", "Requested date/time", "Delivery or pickup details", "Payment details when required"],
+            "roles": ["Front counter / sales", "Production team"],
+            "steps": [
+                {"action": "Receive the customer order"},
+                {"action": "Verify required customer and order information"},
+                {"action": "Check product availability and requested timing"},
+                {"action": "Confirm price, pickup/delivery details and any special requirements"},
+                {"action": "Send the customer a confirmation"},
+                {"action": "Create or update the order record"},
+                {"action": "Forward production details to the relevant team"},
+                {"action": "Update order status as it progresses"},
+            ],
+            "decisions": ["If requested items are unavailable, offer an approved alternative or another date.", "If a custom request is outside standard offerings, escalate to the bakery lead."],
+            "exceptions": ["Do not promise a delivery time until availability and capacity are confirmed.", "Flag allergy-related questions for human review."],
+            "output": "A confirmed order with complete details and a clear owner.",
+            "tags": ["orders", "sales", "customer-service"],
+        },
+        {
+            "name": "Custom Cake Order",
+            "description": "Workflow for handling custom celebration cake requests.",
+            "category": "Production",
+            "trigger": "Customer requests a cake that requires customization.",
+            "inputs": ["Cake size", "Flavor", "Design/theme", "Pickup date", "Reference image if applicable", "Customer contact"],
+            "roles": ["Customer service", "Cake decorator", "Production lead"],
+            "steps": [
+                {"action": "Capture the cake requirements and reference material"},
+                {"action": "Confirm whether the requested design is feasible"},
+                {"action": "Calculate or confirm the approved price"},
+                {"action": "Confirm the pickup date and payment requirement"},
+                {"action": "Record the approved design and specifications"},
+                {"action": "Assign the work to the cake decorator"},
+                {"action": "Complete quality check before handoff"},
+            ],
+            "decisions": ["If design feasibility is uncertain, ask the cake decorator before confirming.", "If the requested date is full, offer the next available date."],
+            "exceptions": ["Never confirm a custom design before feasibility is checked."],
+            "output": "A confirmed custom cake order with documented specifications.",
+            "tags": ["cakes", "custom-orders", "production"],
+        },
+        {
+            "name": "Inventory Restocking",
+            "description": "Routine process for checking stock and replenishing essential ingredients and packaging.",
+            "category": "Operations",
+            "trigger": "Scheduled inventory check or a low-stock alert.",
+            "inputs": ["Current stock levels", "Minimum stock levels", "Supplier list", "Upcoming production needs"],
+            "roles": ["Inventory owner", "Bakery manager"],
+            "steps": [
+                {"action": "Review current stock against minimum levels"},
+                {"action": "Identify ingredients or packaging that need replenishment"},
+                {"action": "Check upcoming production needs"},
+                {"action": "Prepare the supplier order"},
+                {"action": "Confirm quantities and delivery expectations"},
+                {"action": "Update the inventory record when goods arrive"},
+            ],
+            "decisions": ["Prioritize critical ingredients required for confirmed customer orders."],
+            "exceptions": ["Escalate supplier delays that could affect confirmed orders."],
+            "output": "Restocked inventory with updated records.",
+            "tags": ["inventory", "suppliers"],
+        },
+        {
+            "name": "Customer Complaint Handling",
+            "description": "Structured approach for acknowledging, investigating and resolving customer complaints.",
+            "category": "Customer Service",
+            "trigger": "A customer reports a problem with a product or service.",
+            "inputs": ["Customer details", "Order details", "Description of issue", "Relevant evidence"],
+            "roles": ["Customer service", "Bakery manager"],
+            "steps": [
+                {"action": "Listen and record the complaint accurately"},
+                {"action": "Locate the relevant order"},
+                {"action": "Review the facts and evidence"},
+                {"action": "Escalate when manager review is required"},
+                {"action": "Offer an approved resolution"},
+                {"action": "Record the outcome and any follow-up needed"},
+            ],
+            "decisions": ["Refund or replacement decisions must follow the Refund Policy."],
+            "exceptions": ["Do not promise a refund before checking the applicable policy."],
+            "output": "A documented complaint outcome and follow-up action when needed.",
+            "tags": ["complaints", "customer-service"],
+        },
+    ]
+
+    for p in demo_processes:
+        _insert_process(c, p, now)
+
+    demo_knowledge = [
+        ("Customer Service Policy", "Policy", "Guidelines for professional customer communication and escalation.", "Customer Service Policy", ["customer-service", "policy"],
+         "Customer concerns should be acknowledged respectfully and recorded accurately. Escalate complaints that require manager review. Do not promise refunds or replacements before checking the applicable refund policy."),
+        ("Pricing Guide", "Guide", "Reference for standard product and custom order pricing.", "Pricing Guide", ["pricing", "sales"],
+         "Standard products use the current approved price list. Custom cake prices depend on size, flavor, design complexity and approved customization. If a requested design is unusual, confirm feasibility before confirming the final price."),
+        ("Order Requirements", "Guide", "Information that should be collected before an order is confirmed.", "Order Requirements", ["orders", "sales"],
+         "Before confirming a customer order, collect customer name and contact details, requested items and quantities, requested date or time, pickup or delivery details, and payment information when required. Custom orders should also include specifications and reference material when relevant."),
+        ("Refund Policy", "Policy", "Rules for handling refund and replacement requests.", "Refund Policy", ["refunds", "policy"],
+         "Refund or replacement decisions require review against the applicable order circumstances. Staff should not promise a refund before checking the policy and escalating to the bakery manager when needed."),
+    ]
+    for title, kind, desc, source, tags, content in demo_knowledge:
+        c.execute("""INSERT INTO knowledge
+        (business_id,title,type,description,source,status,tags_json,content,created_at,updated_at)
+        VALUES (1,?,?,?,?,?,?,?,?,?)""",
+                  (title, kind, desc, source, "Indexed", json.dumps(tags), content, now, now))
+
+    c.commit()
+    c.close()
+
+def _insert_process(c, p, now):
+    c.execute("""INSERT INTO processes
+    (business_id,name,description,category,owner,status,trigger,inputs_json,roles_json,steps_json,decisions_json,exceptions_json,output,tags_json,created_at,updated_at)
+    VALUES (1,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+    (p["name"], p["description"], p["category"], "Business Owner", "Active", p["trigger"],
+     json.dumps(p["inputs"]), json.dumps(p["roles"]), json.dumps(p["steps"]),
+     json.dumps(p["decisions"]), json.dumps(p["exceptions"]), p["output"], json.dumps(p["tags"]), now, now))
+
+def get_business():
+    c = _conn()
+    row = c.execute("SELECT * FROM businesses WHERE id=1").fetchone()
+    c.close()
+    return dict(row)
+
+def update_business(name, profile):
+    c = _conn()
+    c.execute("UPDATE businesses SET name=?, profile=? WHERE id=1", (name, profile))
+    c.commit(); c.close()
+
+def create_process(p):
+    now = datetime.now().isoformat(timespec="seconds")
+    c = _conn()
+    _insert_process(c, p, now)
+    pid = c.execute("SELECT last_insert_rowid()").fetchone()[0]
+    c.commit(); c.close()
+    return pid
+
+def get_process(pid):
+    if not pid:
+        return None
+    c = _conn()
+    row = c.execute("SELECT * FROM processes WHERE id=? AND business_id=1", (pid,)).fetchone()
+    c.close()
+    if not row:
+        return None
+    d = dict(row)
+    for field in ["inputs","roles","steps","decisions","exceptions","tags"]:
+        d[field] = json.loads(d[field+"_json"])
+        del d[field+"_json"]
+    return d
+
+def list_processes():
+    c = _conn()
+    rows = c.execute("SELECT * FROM processes WHERE business_id=1 ORDER BY updated_at DESC").fetchall()
+    c.close()
+    out=[]
+    for r in rows:
+        d=dict(r)
+        d["tags"]=json.loads(d["tags_json"])
+        out.append(d)
+    return out
+
+def list_knowledge():
+    c = _conn()
+    rows = c.execute("SELECT * FROM knowledge WHERE business_id=1 ORDER BY updated_at DESC").fetchall()
+    c.close()
+    out=[]
+    for r in rows:
+        d=dict(r); d["tags"]=json.loads(d["tags_json"]); out.append(d)
+    return out
+
+def create_knowledge(title, kind, description, source, tags, content):
+    now = datetime.now().isoformat(timespec="seconds")
+    c = _conn()
+    c.execute("""INSERT INTO knowledge
+    (business_id,title,type,description,source,status,tags_json,content,created_at,updated_at)
+    VALUES (1,?,?,?,?,?,?,?,?,?)""",
+    (title, kind, description, source, "Indexed", json.dumps(tags), content, now, now))
+    kid=c.execute("SELECT last_insert_rowid()").fetchone()[0]
+    c.commit(); c.close()
+    return kid
+
+def add_chunk(source_type, source_id, title, content, metadata=None):
+    c=_conn()
+    c.execute("""INSERT INTO chunks
+    (business_id,source_type,source_id,title,content,metadata_json,created_at)
+    VALUES (1,?,?,?,?,?,?)""",
+    (source_type, source_id, title, content, json.dumps(metadata or {}), datetime.now().isoformat(timespec="seconds")))
+    c.commit(); c.close()
+
+def clear_chunks_for(source_type, source_id):
+    c=_conn(); c.execute("DELETE FROM chunks WHERE source_type=? AND source_id=?", (source_type, source_id)); c.commit(); c.close()
+
+def list_chunks():
+    c=_conn()
+    rows=c.execute("SELECT * FROM chunks WHERE business_id=1 ORDER BY id").fetchall()
+    c.close()
+    return [dict(r) for r in rows]
+
+def log_activity(action, details=""):
+    c=_conn()
+    c.execute("INSERT INTO activity (business_id,action,details,created_at) VALUES (1,?,?,?)",
+              (action, details, datetime.now().strftime("%Y-%m-%d %H:%M")))
+    c.commit(); c.close()
+
+def get_activity(limit=20):
+    c=_conn()
+    rows=c.execute("SELECT * FROM activity WHERE business_id=1 ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+    c.close()
+    return [dict(r) for r in rows]
