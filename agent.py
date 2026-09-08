@@ -4,7 +4,7 @@ from pathlib import Path
 
 from rag import retrieve, format_context
 
-MODEL = os.getenv("GEMINI_MODEL", "gemini-3.6-flash")
+MODEL = os.getenv("GEMINI_MODEL", "gemini-3.5-flash")
 
 
 def _client():
