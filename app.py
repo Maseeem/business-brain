@@ -372,9 +372,14 @@ elif page == "Process detail":
                 st.write(p["output"] or "Not specified")
         with tabs[1]:
             for i, step in enumerate(p["steps"], 1):
-                st.markdown(f"<div class='step-row'><span class='step-number'>{i}</span><div><b>{step.get('action','')}</b>"
-                            f"{('<div class=\"muted\">'+step.get('notes','')+'</div>') if step.get('notes') else ''}</div></div>",
-                            unsafe_allow_html=True)
+                action = step.get("action", "")
+                notes = step.get("notes", "")
+                notes_html = f"<div class='muted'>{notes}</div>" if notes else ""
+                st.markdown(
+                    f"<div class='step-row'><span class='step-number'>{i}</span>"
+                    f"<div><b>{action}</b>{notes_html}</div></div>",
+                    unsafe_allow_html=True,
+                )
         with tabs[2]:
             st.markdown("#### Decision points")
             for x in p["decisions"]:
