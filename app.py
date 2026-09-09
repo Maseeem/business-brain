@@ -1,7 +1,7 @@
 import streamlit as st
 from dotenv import load_dotenv
 
-from database import init_db, seed_demo_data, get_business, list_processes, list_knowledge, get_activity
+from database import init_db, seed_demo_data, get_business, list_processes, list_knowledge, list_chunks, get_activity
 from agent import generate_sop_from_inputs, answer_business_question
 from rag import ingest_knowledge_file, ingest_text_knowledge, index_process, bootstrap_index
 from ui import inject_css, sidebar, page_header, stat_card, empty_state, source_card
@@ -32,83 +32,66 @@ if "notice" not in st.session_state:
 
 sidebar(business)
 
+if st.session_state.get("notice"):
+    st.success(st.session_state.notice)
+    st.session_state.notice = None
+
 page = st.session_state.page
 
 if page == "Dashboard":
-    page_header(
-        "Good morning 👋",
-        "Your business knowledge, organized and ready to work.",
-        "Dashboard",
-    )
-
+    page_header("Good morning 👋", "Your business knowledge, organized and ready to work.", "Dashboard")
     processes = list_processes()
     knowledge = list_knowledge()
+    chunks = list_chunks()
     activity = get_activity(6)
-
+    indexed_count = sum(1 for x in knowledge if x["status"] == "Indexed")
+    chunk_count = len(chunks)
     cols = st.columns(4)
-    stats = [
-        ("Processes", len(processes), "Documented workflows"),
-        ("Knowledge items", len(knowledge), "Sources in your Brain"),
-        ("Indexed", sum(1 for x in knowledge if x["status"] == "Indexed"), "Ready for retrieval"),
-        ("Activity", len(get_activity(1000)), "Recent workspace events"),
-    ]
+    stats = [("Processes", len(processes), "Documented workflows"), ("Knowledge", len(knowledge), "Sources in your Brain"), ("Searchable chunks", chunk_count, "Ready for retrieval"), ("Activity", len(get_activity(1000)), "Recent workspace events")]
     for col, (label, value, sub) in zip(cols, stats):
-        with col:
-            stat_card(label, value, sub)
-
+        with col: stat_card(label, value, sub)
+    st.markdown("<div class='section-gap'></div>", unsafe_allow_html=True)
+    if not knowledge:
+        st.markdown("<div class='info-banner'><b>Business Brain needs knowledge.</b> Add a policy, guide, FAQ or document to start building your searchable Brain.</div>", unsafe_allow_html=True)
+    elif indexed_count == len(knowledge) and chunk_count > 0:
+        st.markdown(f"<div class='info-banner'><b>✓ Business Brain is healthy.</b> {indexed_count} knowledge items are indexed and {chunk_count} searchable chunks are ready for retrieval.</div>", unsafe_allow_html=True)
+    else:
+        st.markdown(f"<div class='info-banner'><b>Business Brain needs attention.</b> {indexed_count} of {len(knowledge)} knowledge items are indexed. {chunk_count} searchable chunks are available.</div>", unsafe_allow_html=True)
     st.markdown("<div class='section-gap'></div>", unsafe_allow_html=True)
     left, right = st.columns([1.65, 1], gap="large")
-
     with left:
         st.markdown("### Quick actions")
         qcols = st.columns(3)
-        actions = [
-            ("＋", "Record Process", "Turn how your team works into an SOP.", "Record Process"),
-            ("✦", "Add Knowledge", "Teach Business Brain something new.", "Knowledge"),
-            ("⌕", "Ask Brain", "Get an evidence-backed answer.", "Ask Brain"),
-        ]
+        actions = [("＋", "Record Process", "Turn how your team works into an SOP.", "Record Process"), ("✦", "Add Knowledge", "Teach Business Brain something new.", "Knowledge"), ("⌕", "Ask Brain", "Get an evidence-backed answer.", "Ask Brain")]
         for c, (icon, title, desc, target) in zip(qcols, actions):
             with c:
-                st.markdown(f"""
-                <div class='action-card'>
-                    <div class='action-icon'>{icon}</div>
-                    <div class='action-title'>{title}</div>
-                    <div class='action-desc'>{desc}</div>
-                </div>
-                """, unsafe_allow_html=True)
-                if st.button(f"Open {title}", key=f"qa_{target}", use_container_width=True):
-                    st.session_state.page = target
-                    st.rerun()
-
+                st.markdown(f"<div class='action-card'><div class='action-icon'>{icon}</div><div class='action-title'>{title}</div><div class='action-desc'>{desc}</div></div>", unsafe_allow_html=True)
+                if st.button(f"Open {title}", key=f"qa_{target}", use_container_width=True): st.session_state.page = target; st.rerun()
+        st.markdown("<div class='section-gap'></div>", unsafe_allow_html=True)
+        st.markdown("### Knowledge Coverage")
+        type_counts = {}
+        for item in knowledge:
+            kind = item.get("type") or "Other"; type_counts[kind] = type_counts.get(kind, 0) + 1
+        if type_counts:
+            coverage_cols = st.columns(min(4, max(1, len(type_counts))))
+            for col, (kind, count) in zip(coverage_cols, sorted(type_counts.items(), key=lambda x: (-x[1], x[0]))):
+                with col: stat_card(kind, count, f"{round(count / len(knowledge) * 100)}% of knowledge")
+        else: empty_state("No knowledge coverage yet", "Add your first knowledge item.")
         st.markdown("<div class='section-gap'></div>", unsafe_allow_html=True)
         st.markdown("### Recent processes")
-        if not processes:
-            empty_state("No processes yet", "Record your first workflow to start teaching your Business Brain.")
+        if not processes: empty_state("No processes yet", "Record your first workflow to start teaching your Business Brain.")
         else:
             for p in processes[:5]:
                 c1, c2, c3 = st.columns([4, 1.5, 1])
-                with c1:
-                    st.markdown(f"**{p['name']}**")
-                    st.caption(p["description"] or "Structured business workflow")
-                with c2:
-                    st.caption(p["category"])
+                with c1: st.markdown(f"**{p['name']}**"); st.caption(p["description"] or "Structured business workflow")
+                with c2: st.caption(p["category"])
                 with c3:
-                    if st.button("Open", key=f"open_p_{p['id']}"):
-                        st.session_state.selected_process = p["id"]
-                        st.session_state.page = "Process detail"
-                        st.rerun()
-
+                    if st.button("Open", key=f"open_p_{p['id']}"): st.session_state.selected_process = p["id"]; st.session_state.page = "Process detail"; st.rerun()
     with right:
         st.markdown("### Recent activity")
-        if not activity:
-            empty_state("Nothing here yet", "Your workspace activity will appear here.")
+        if not activity: empty_state("Nothing here yet", "Your workspace activity will appear here.")
         for item in activity:
-            st.markdown(
-                f"<div class='activity-row'><div class='activity-dot'></div>"
-                f"<div><b>{item['action']}</b><div class='muted'>{item['details']}</div>"
-                f"<div class='tiny'>{item['created_at']}</div></div></div>",
-                unsafe_allow_html=True,
-            )
+            st.markdown(f"<div class='activity-row'><div class='activity-dot'></div><div><b>{item['action']}</b><div class='muted'>{item['details']}</div><div class='tiny'>{item['created_at']}</div></div></div>", unsafe_allow_html=True)
 
 elif page == "Record Process":
     page_header(
@@ -230,11 +213,18 @@ elif page == "Knowledge":
             else:
                 with st.spinner("Extracting, structuring and indexing…"):
                     result = ingest_knowledge_file(title, kind, tags, file, text)
-                if result["ok"]:
+
+                if result.get("duplicate"):
+                    st.info(
+                        "This knowledge item already exists in your Business Brain. "
+                        "Nothing new was added."
+                    )
+                elif result.get("ok"):
                     st.success("Knowledge added and indexed.")
+                    st.session_state.notice = "Knowledge added and indexed successfully."
                     st.rerun()
                 else:
-                    st.error(result["error"])
+                    st.error(result.get("error", "Something went wrong while adding knowledge."))
 
     with tabs[1]:
         knowledge = list_knowledge()
