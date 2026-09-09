@@ -63,11 +63,21 @@ def sidebar(business):
         </div>
         """, unsafe_allow_html=True)
         st.markdown("<div class='nav-label'>Workspace</div>", unsafe_allow_html=True)
+        nav_help = {
+            "Dashboard": "See your business at a glance",
+            "Ask Brain": "Ask questions and get grounded answers",
+            "Processes": "View and manage how work gets done",
+            "Knowledge": "Store policies, guides and business information",
+            "Record Process": "Tell AI how a task works and create an SOP",
+            "Activity": "See what was added or changed",
+            "Settings": "Manage your workspace settings",
+        }
         for label, icon in NAV:
             active = st.session_state.page == label
             if st.button(f"{icon}  {label}", key=f"nav_{label}", use_container_width=True, type="primary" if active else "secondary"):
                 st.session_state.page = label
                 st.rerun()
+            st.caption(nav_help[label])
         st.markdown("<div style='height:1rem'></div>", unsafe_allow_html=True)
         st.markdown("""
         <div class='info-banner' style='font-size:.72rem'>
