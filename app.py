@@ -1,14 +1,37 @@
 import streamlit as st
-import re
 from dotenv import load_dotenv
 
-from database import (
-    init_db, seed_demo_data, get_business, list_processes, list_knowledge,
-    list_chunks, get_activity, get_process, update_process, log_activity,
-)
+from database import init_db, seed_demo_data, get_business, list_processes, list_knowledge, get_activity
 from agent import generate_sop_from_inputs, answer_business_question
 from rag import ingest_knowledge_file, ingest_text_knowledge, index_process, bootstrap_index
 from ui import inject_css, sidebar, page_header, stat_card, empty_state, source_card
+
+def _as_list(value):
+    """Safely normalize AI JSON fields that may be a list or a single value."""
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return [str(x).strip() for x in value if str(x).strip()]
+    if isinstance(value, tuple):
+        return [str(x).strip() for x in value if str(x).strip()]
+    text = str(value).strip()
+    if not text:
+        return []
+    return [line.strip() for line in text.splitlines() if line.strip()]
+
+
+def _as_steps(value):
+    """Safely normalize AI workflow steps into dictionaries."""
+    if not isinstance(value, list):
+        return []
+    steps = []
+    for item in value:
+        if isinstance(item, dict):
+            steps.append(item)
+        elif str(item).strip():
+            steps.append({"action": str(item).strip()})
+    return steps
+
 
 load_dotenv()
 init_db()
@@ -31,10 +54,10 @@ if "chat" not in st.session_state:
     st.session_state.chat = []
 if "draft_sop" not in st.session_state:
     st.session_state.draft_sop = None
+if "draft_sources" not in st.session_state:
+    st.session_state.draft_sources = []
 if "notice" not in st.session_state:
     st.session_state.notice = None
-if "edit_process" not in st.session_state:
-    st.session_state.edit_process = False
 
 sidebar(business)
 
@@ -45,64 +68,85 @@ if st.session_state.get("notice"):
 page = st.session_state.page
 
 if page == "Dashboard":
-    page_header("Your Business Brain", "Your business information, processes, and answers — all in one place.", "Dashboard")
+    page_header(
+        "Good morning 👋",
+        "Your business knowledge, organized and ready to work.",
+        "Dashboard",
+    )
+
     processes = list_processes()
     knowledge = list_knowledge()
-    chunks = list_chunks()
     activity = get_activity(6)
-    indexed_count = sum(1 for x in knowledge if x["status"] == "Indexed")
-    chunk_count = len(chunks)
+
     cols = st.columns(4)
-    stats = [("Processes", len(processes), "Documented workflows"), ("Knowledge", len(knowledge), "Sources in your Brain"), ("Searchable chunks", chunk_count, "Ready for retrieval"), ("Activity", len(get_activity(1000)), "Recent workspace events")]
+    stats = [
+        ("Processes", len(processes), "Documented workflows"),
+        ("Knowledge items", len(knowledge), "Sources in your Brain"),
+        ("Indexed", sum(1 for x in knowledge if x["status"] == "Indexed"), "Ready for retrieval"),
+        ("Activity", len(get_activity(1000)), "Recent workspace events"),
+    ]
     for col, (label, value, sub) in zip(cols, stats):
-        with col: stat_card(label, value, sub)
-    st.markdown("<div class='section-gap'></div>", unsafe_allow_html=True)
-    if not knowledge:
-        st.markdown("<div class='info-banner'><b>Business Brain needs knowledge.</b> Add a policy, guide, FAQ or document to start building your searchable Brain.</div>", unsafe_allow_html=True)
-    elif indexed_count == len(knowledge) and chunk_count > 0:
-        st.markdown(f"<div class='info-banner'><b>✓ Business Brain is healthy.</b> {indexed_count} knowledge items are indexed and {chunk_count} searchable chunks are ready for retrieval.</div>", unsafe_allow_html=True)
-    else:
-        st.markdown(f"<div class='info-banner'><b>Business Brain needs attention.</b> {indexed_count} of {len(knowledge)} knowledge items are indexed. {chunk_count} searchable chunks are available.</div>", unsafe_allow_html=True)
+        with col:
+            stat_card(label, value, sub)
+
     st.markdown("<div class='section-gap'></div>", unsafe_allow_html=True)
     left, right = st.columns([1.65, 1], gap="large")
+
     with left:
         st.markdown("### Quick actions")
         qcols = st.columns(3)
-        actions = [("＋", "Record Process", "Describe a task and let AI turn it into an SOP.", "Record Process"), ("✦", "Add Knowledge", "Add a policy, guide, FAQ, or other business information.", "Knowledge"), ("⌕", "Ask Brain", "Ask a question and get an answer from your saved information.", "Ask Brain")]
+        actions = [
+            ("＋", "Record Process", "Turn how your team works into an SOP.", "Record Process"),
+            ("✦", "Add Knowledge", "Teach Business Brain something new.", "Knowledge"),
+            ("⌕", "Ask Brain", "Get an evidence-backed answer.", "Ask Brain"),
+        ]
         for c, (icon, title, desc, target) in zip(qcols, actions):
             with c:
-                st.markdown(f"<div class='action-card'><div class='action-icon'>{icon}</div><div class='action-title'>{title}</div><div class='action-desc'>{desc}</div></div>", unsafe_allow_html=True)
-                if st.button(f"Open {title}", key=f"qa_{target}", use_container_width=True): st.session_state.page = target; st.rerun()
-        st.markdown("<div class='section-gap'></div>", unsafe_allow_html=True)
-        st.markdown("### Knowledge Coverage")
-        type_counts = {}
-        for item in knowledge:
-            kind = item.get("type") or "Other"; type_counts[kind] = type_counts.get(kind, 0) + 1
-        if type_counts:
-            coverage_cols = st.columns(min(4, max(1, len(type_counts))))
-            for col, (kind, count) in zip(coverage_cols, sorted(type_counts.items(), key=lambda x: (-x[1], x[0]))):
-                with col: stat_card(kind, count, f"{round(count / len(knowledge) * 100)}% of knowledge")
-        else: empty_state("No knowledge coverage yet", "Add your first knowledge item.")
+                st.markdown(f"""
+                <div class='action-card'>
+                    <div class='action-icon'>{icon}</div>
+                    <div class='action-title'>{title}</div>
+                    <div class='action-desc'>{desc}</div>
+                </div>
+                """, unsafe_allow_html=True)
+                if st.button(f"Open {title}", key=f"qa_{target}", use_container_width=True):
+                    st.session_state.page = target
+                    st.rerun()
+
         st.markdown("<div class='section-gap'></div>", unsafe_allow_html=True)
         st.markdown("### Recent processes")
-        if not processes: empty_state("No processes yet", "Record your first workflow to start teaching your Business Brain.")
+        if not processes:
+            empty_state("No processes yet", "Record your first workflow to start teaching your Business Brain.")
         else:
             for p in processes[:5]:
                 c1, c2, c3 = st.columns([4, 1.5, 1])
-                with c1: st.markdown(f"**{p['name']}**"); st.caption(p["description"] or "Structured business workflow")
-                with c2: st.caption(p["category"])
+                with c1:
+                    st.markdown(f"**{p['name']}**")
+                    st.caption(p["description"] or "Structured business workflow")
+                with c2:
+                    st.caption(p["category"])
                 with c3:
-                    if st.button("Open", key=f"open_p_{p['id']}"): st.session_state.selected_process = p["id"]; st.session_state.page = "Process detail"; st.rerun()
+                    if st.button("Open", key=f"open_p_{p['id']}"):
+                        st.session_state.selected_process = p["id"]
+                        st.session_state.page = "Process detail"
+                        st.rerun()
+
     with right:
         st.markdown("### Recent activity")
-        if not activity: empty_state("Nothing here yet", "Your workspace activity will appear here.")
+        if not activity:
+            empty_state("Nothing here yet", "Your workspace activity will appear here.")
         for item in activity:
-            st.markdown(f"<div class='activity-row'><div class='activity-dot'></div><div><b>{item['action']}</b><div class='muted'>{item['details']}</div><div class='tiny'>{item['created_at']}</div></div></div>", unsafe_allow_html=True)
+            st.markdown(
+                f"<div class='activity-row'><div class='activity-dot'></div>"
+                f"<div><b>{item['action']}</b><div class='muted'>{item['details']}</div>"
+                f"<div class='tiny'>{item['created_at']}</div></div></div>",
+                unsafe_allow_html=True,
+            )
 
 elif page == "Record Process":
     page_header(
-        "Create a new process",
-        "Describe how a task is done, and AI will turn it into an editable SOP.",
+        "Record a process",
+        "Teach Business Brain how your team actually gets work done.",
         "Process Recorder",
     )
 
@@ -145,23 +189,31 @@ elif page == "Record Process":
     if st.session_state.draft_sop:
         st.markdown("<div class='section-gap'></div>", unsafe_allow_html=True)
         st.markdown("### Review & edit")
-        sop = st.session_state.draft_sop
+        sop = st.session_state.draft_sop or {}
+        # Gemini may occasionally return a scalar string instead of a JSON list.
+        # Normalize editable SOP fields so Review & Edit never crashes on join().
+        required_inputs = _as_list(sop.get("required_inputs"))
+        roles_list = _as_list(sop.get("roles"))
+        decisions_list = _as_list(sop.get("decisions"))
+        exceptions_list = _as_list(sop.get("exceptions"))
+        tags_list = _as_list(sop.get("tags"))
+        steps_list = _as_steps(sop.get("steps"))
 
         with st.form("sop_editor"):
             name = st.text_input("Process name", value=sop.get("process_name", ""))
             category = st.text_input("Category", value=sop.get("category", "Operations"))
             purpose = st.text_area("Purpose", value=sop.get("purpose", ""))
             trigger = st.text_input("Trigger", value=sop.get("trigger", ""))
-            inputs = st.text_area("Required inputs", value="\n".join(sop.get("required_inputs", [])))
-            roles = st.text_area("People / roles", value="\n".join(sop.get("roles", [])))
+            inputs = st.text_area("Required inputs", value="\n".join(required_inputs))
+            roles = st.text_area("People / roles", value="\n".join(roles_list))
             steps = st.text_area("Step-by-step workflow", value="\n".join(
                 [f"{i+1}. {s.get('action','')}" + (f" — {s.get('notes','')}" if s.get("notes") else "")
-                 for i, s in enumerate(sop.get("steps", []))]
+                 for i, s in enumerate(steps_list)]
             ), height=260)
-            decisions = st.text_area("Decisions / conditions", value="\n".join(sop.get("decisions", [])))
-            exceptions = st.text_area("Exceptions / warnings", value="\n".join(sop.get("exceptions", [])))
+            decisions = st.text_area("Decisions / conditions", value="\n".join(decisions_list))
+            exceptions = st.text_area("Exceptions / warnings", value="\n".join(exceptions_list))
             output = st.text_area("Expected output", value=sop.get("output", ""))
-            tags = st.text_input("Tags", value=", ".join(sop.get("tags", [])))
+            tags = st.text_input("Tags", value=", ".join(tags_list))
             save = st.form_submit_button("Save to Business Brain", type="primary", use_container_width=True)
 
         if save:
@@ -192,7 +244,7 @@ elif page == "Record Process":
 elif page == "Knowledge":
     page_header(
         "Knowledge",
-        "Store policies, guides, FAQs, documents, and other business information.",
+        "Build the source layer behind your Business Brain.",
         "Knowledge base",
     )
     tabs = st.tabs(["Add knowledge", "Library"])
@@ -251,8 +303,8 @@ elif page == "Knowledge":
 
 elif page == "Ask Brain":
     page_header(
-        "Ask Brain",
-        "Ask a question and Business Brain will answer using your saved business information and processes.",
+        "Ask Business Brain",
+        "Ask questions about how your business works. Answers are grounded in your stored knowledge.",
         "AI workspace",
     )
 
@@ -320,188 +372,74 @@ elif page == "Ask Brain":
 elif page == "Processes":
     page_header(
         "Processes",
-        "View and manage the step-by-step ways your business gets work done.",
+        "Your business workflows, structured as living SOPs.",
         "Process library",
     )
-
     processes = list_processes()
-    total = len(processes)
-    active = sum(1 for p in processes if (p.get("status") or "").casefold() == "active")
-    categories = sorted({(p.get("category") or "Other").strip() or "Other" for p in processes})
-
-    cols = st.columns(4)
-    for col, (label, value, sub) in zip(cols, [
-        ("Total processes", total, "Documented workflows"),
-        ("Active", active, "Currently in use"),
-        ("Categories", len(categories), "Workflow areas"),
-        ("Recently updated", min(total, 5), "Latest library entries"),
-    ]):
-        with col:
-            stat_card(label, value, sub)
-
-    st.markdown("<div class='section-gap'></div>", unsafe_allow_html=True)
-    search_col, filter_col = st.columns([2.2, 1])
-    with search_col:
-        process_search = st.text_input(
-            "Search processes",
-            placeholder="Search by process name or description…",
-            label_visibility="collapsed",
-        )
-    with filter_col:
-        category_filter = st.selectbox(
-            "Category",
-            ["All categories"] + categories,
-            label_visibility="collapsed",
-        )
-
-    filtered = processes
-    if process_search.strip():
-        q = process_search.casefold().strip()
-        filtered = [
-            p for p in filtered
-            if q in (p.get("name") or "").casefold()
-            or q in (p.get("description") or "").casefold()
-        ]
-    if category_filter != "All categories":
-        filtered = [p for p in filtered if (p.get("category") or "Other") == category_filter]
-
-    st.markdown("<div class='section-gap'></div>", unsafe_allow_html=True)
-    if not filtered:
-        if processes:
-            empty_state("No matching processes", "Try a different search term or category.")
-        else:
-            empty_state("No processes yet", "Record a process to create your first SOP.")
-    else:
-        for p in filtered:
-            with st.container(border=True):
-                a, b, c, d = st.columns([3.7, 1.25, 1.15, 1])
-                with a:
-                    st.markdown(f"**{p['name']}**")
-                    st.caption(p.get("description") or "Structured business workflow")
-                    st.caption(f"Owner: {p.get('owner') or 'Business Owner'} · Updated {p.get('updated_at') or '—'}")
-                with b:
-                    st.caption(p.get("category") or "Other")
-                with c:
-                    st.caption(p.get("status") or "Active")
-                with d:
-                    if st.button("Open", key=f"view_{p['id']}", use_container_width=True):
-                        st.session_state.selected_process = p["id"]
-                        st.session_state.page = "Process detail"
-                        st.rerun()
+    if not processes:
+        empty_state("No processes yet", "Record a process to create your first SOP.")
+    for p in processes:
+        with st.container(border=True):
+            a, b, c, d = st.columns([4, 1.3, 1.3, 1])
+            with a:
+                st.markdown(f"**{p['name']}**")
+                st.caption(p["description"] or "No description")
+            with b:
+                st.caption(p["category"])
+            with c:
+                st.caption(p["status"])
+            with d:
+                if st.button("View", key=f"view_{p['id']}"):
+                    st.session_state.selected_process = p["id"]
+                    st.session_state.page = "Process detail"
+                    st.rerun()
 
 elif page == "Process detail":
+    from database import get_process
     p = get_process(st.session_state.get("selected_process"))
     if not p:
         st.error("Process not found.")
     else:
-        page_header(p["name"], p.get("description") or "Structured business workflow", "Process")
-        st.caption(f"{p.get('category') or 'Other'} · {p.get('status') or 'Active'} · Owner: {p.get('owner') or 'Business Owner'} · Updated {p.get('updated_at') or '—'}")
+        page_header(p["name"], p["description"], "Process")
+        st.caption(f"{p['category']} · {p['status']} · Owner: {p['owner']} · Updated {p['updated_at']}")
 
-        action_left, action_right = st.columns([1, 5])
-        with action_left:
-            edit_mode = st.button("Edit Process", use_container_width=True)
-        if edit_mode:
-            st.session_state.edit_process = True
-            st.rerun()
-
-        if st.session_state.get("edit_process"):
-            st.markdown("### Edit process")
-            with st.form("process_edit_form"):
-                name = st.text_input("Process name", value=p.get("name", ""))
-                category = st.text_input("Category", value=p.get("category", "Operations"))
-                status = st.selectbox("Status", ["Active", "Draft", "Archived"], index=["Active", "Draft", "Archived"].index(p.get("status", "Active")) if p.get("status", "Active") in ["Active", "Draft", "Archived"] else 0)
-                purpose = st.text_area("Description / purpose", value=p.get("description", ""))
-                trigger = st.text_input("Trigger", value=p.get("trigger", ""))
-                inputs = st.text_area("Required inputs", value="\n".join(p.get("inputs", [])))
-                roles = st.text_area("People / roles", value="\n".join(p.get("roles", [])))
-                steps_text = "\n".join(
-                    [f"{i+1}. {s.get('action','')}" + (f" — {s.get('notes','')}" if s.get("notes") else "") for i, s in enumerate(p.get("steps", []))]
+        tabs = st.tabs(["Overview", "Workflow", "Decisions & exceptions", "Related knowledge"])
+        with tabs[0]:
+            c1, c2 = st.columns(2)
+            with c1:
+                st.markdown("#### Trigger")
+                st.write(p["trigger"] or "Not specified")
+                st.markdown("#### Required inputs")
+                for x in p["inputs"]:
+                    st.markdown(f"- {x}")
+            with c2:
+                st.markdown("#### People / roles")
+                for x in p["roles"]:
+                    st.markdown(f"- {x}")
+                st.markdown("#### Expected output")
+                st.write(p["output"] or "Not specified")
+        with tabs[1]:
+            for i, step in enumerate(p["steps"], 1):
+                action = step.get("action", "")
+                notes = step.get("notes", "")
+                notes_html = f"<div class='muted'>{notes}</div>" if notes else ""
+                st.markdown(
+                    f"<div class='step-row'><span class='step-number'>{i}</span>"
+                    f"<div><b>{action}</b>{notes_html}</div></div>",
+                    unsafe_allow_html=True,
                 )
-                steps = st.text_area("Step-by-step workflow", value=steps_text, height=240)
-                decisions = st.text_area("Decisions / conditions", value="\n".join(p.get("decisions", [])))
-                exceptions = st.text_area("Exceptions / warnings", value="\n".join(p.get("exceptions", [])))
-                output = st.text_area("Expected output", value=p.get("output", ""))
-                tags = st.text_input("Tags", value=", ".join(p.get("tags", [])))
-                save_edit = st.form_submit_button("Save changes", type="primary", use_container_width=True)
-
-            if save_edit:
-                clean_steps = []
-                for line in steps.splitlines():
-                    line = re.sub(r"^\s*\d+[.)]\s*", "", line).strip()
-                    if not line:
-                        continue
-                    if " — " in line:
-                        action, notes = line.split(" — ", 1)
-                        clean_steps.append({"action": action.strip(), "notes": notes.strip()})
-                    else:
-                        clean_steps.append({"action": line})
-                updated = {
-                    "name": name.strip() or "Untitled Process",
-                    "description": purpose.strip(),
-                    "category": category.strip() or "Operations",
-                    "owner": p.get("owner") or "Business Owner",
-                    "status": status,
-                    "trigger": trigger.strip(),
-                    "inputs": [x.strip() for x in inputs.splitlines() if x.strip()],
-                    "roles": [x.strip() for x in roles.splitlines() if x.strip()],
-                    "steps": clean_steps,
-                    "decisions": [x.strip() for x in decisions.splitlines() if x.strip()],
-                    "exceptions": [x.strip() for x in exceptions.splitlines() if x.strip()],
-                    "output": output.strip(),
-                    "tags": [x.strip() for x in tags.split(",") if x.strip()],
-                }
-                if update_process(p["id"], updated):
-                    index_process(p["id"], updated)
-                    log_activity("Process updated", updated["name"])
-                    st.session_state.edit_process = False
-                    st.success("Process updated and re-indexed. Business Brain can use the latest version.")
-                    st.rerun()
-                else:
-                    st.error("No changes were saved.")
-        else:
-            tabs = st.tabs(["Overview", "Workflow", "Decisions & exceptions", "Related knowledge", "History"])
-            with tabs[0]:
-                c1, c2 = st.columns(2)
-                with c1:
-                    st.markdown("#### Trigger")
-                    st.write(p.get("trigger") or "Not specified")
-                    st.markdown("#### Required inputs")
-                    if p.get("inputs"):
-                        for x in p["inputs"]: st.markdown(f"- {x}")
-                    else:
-                        st.caption("Not specified")
-                with c2:
-                    st.markdown("#### People / roles")
-                    if p.get("roles"):
-                        for x in p["roles"]: st.markdown(f"- {x}")
-                    else:
-                        st.caption("Not specified")
-                    st.markdown("#### Expected output")
-                    st.write(p.get("output") or "Not specified")
-            with tabs[1]:
-                if not p.get("steps"):
-                    empty_state("No workflow steps yet", "Edit the process to add the step-by-step workflow.")
-                for i, step in enumerate(p.get("steps", []), 1):
-                    action = step.get("action", "")
-                    notes = step.get("notes", "")
-                    notes_html = f"<div class='muted'>{notes}</div>" if notes else ""
-                    st.markdown(f"<div class='step-row'><span class='step-number'>{i}</span><div><b>{action}</b>{notes_html}</div></div>", unsafe_allow_html=True)
-            with tabs[2]:
-                st.markdown("#### Decision points")
-                if p.get("decisions"):
-                    for x in p["decisions"]: st.markdown(f"- {x}")
-                else: st.caption("No decision points specified.")
-                st.markdown("#### Exceptions & warnings")
-                if p.get("exceptions"):
-                    for x in p["exceptions"]: st.markdown(f"- {x}")
-                else: st.caption("No exceptions or warnings specified.")
-            with tabs[3]:
-                st.caption("Knowledge relationships are intentionally lightweight in the MVP. Retrieval automatically surfaces semantically related sources when you ask Business Brain.")
-            with tabs[4]:
-                st.info("Version history is planned for the next stage. The current MVP preserves the process ID and records update activity while keeping the latest SOP searchable.")
+        with tabs[2]:
+            st.markdown("#### Decision points")
+            for x in p["decisions"]:
+                st.markdown(f"- {x}")
+            st.markdown("#### Exceptions & warnings")
+            for x in p["exceptions"]:
+                st.markdown(f"- {x}")
+        with tabs[3]:
+            st.caption("Knowledge relationships are intentionally lightweight in the MVP. Retrieval automatically surfaces semantically related sources when you ask Business Brain.")
 
 elif page == "Activity":
-    page_header("Activity", "See what has been added or changed in your Business Brain.", "Workspace")
+    page_header("Activity", "A simple audit trail of important workspace events.", "Workspace")
     for item in get_activity(100):
         st.markdown(
             f"<div class='activity-row'><div class='activity-dot'></div>"
@@ -511,7 +449,7 @@ elif page == "Activity":
         )
 
 elif page == "Settings":
-    page_header("Settings", "Manage your Business Brain workspace configuration.", "Settings")
+    page_header("Settings", "Workspace configuration for the Business Brain MVP.", "Settings")
     st.markdown("### Business profile")
     with st.form("settings"):
         name = st.text_input("Business name", value=business["name"])
