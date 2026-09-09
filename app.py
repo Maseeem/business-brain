@@ -32,10 +32,6 @@ if "notice" not in st.session_state:
 
 sidebar(business)
 
-if st.session_state.get("notice"):
-    st.success(st.session_state.notice)
-    st.session_state.notice = None
-
 page = st.session_state.page
 
 if page == "Dashboard":
@@ -234,18 +230,11 @@ elif page == "Knowledge":
             else:
                 with st.spinner("Extracting, structuring and indexing…"):
                     result = ingest_knowledge_file(title, kind, tags, file, text)
-
-                if result.get("duplicate"):
-                    st.info(
-                        "This knowledge item already exists in your Business Brain. "
-                        "Nothing new was added."
-                    )
-                elif result.get("ok"):
+                if result["ok"]:
                     st.success("Knowledge added and indexed.")
-                    st.session_state.notice = "Knowledge added and indexed successfully."
                     st.rerun()
                 else:
-                    st.error(result.get("error", "Something went wrong while adding knowledge."))
+                    st.error(result["error"])
 
     with tabs[1]:
         knowledge = list_knowledge()
