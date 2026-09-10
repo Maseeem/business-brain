@@ -292,24 +292,14 @@ elif page == "Process detail":
         with tabs[0]:
             c1,c2=st.columns(2)
             with c1:
-                st.markdown("#### Trigger"); st.write(p["trigger"] or "Not specified"); st.markdown("#### Required inputs");
-                for x in p["inputs"]:
-                    st.markdown(f"- {x}")
+                st.markdown("#### Trigger"); st.write(p["trigger"] or "Not specified"); st.markdown("#### Required inputs"); [st.markdown(f"- {x}") for x in p["inputs"]]
             with c2:
-                st.markdown("#### People / roles")
-                for x in p["roles"]:
-                    st.markdown(f"- {x}")
-                st.markdown("#### Expected output"); st.write(p["output"] or "Not specified")
+                st.markdown("#### People / roles"); [st.markdown(f"- {x}") for x in p["roles"]]; st.markdown("#### Expected output"); st.write(p["output"] or "Not specified")
         with tabs[1]:
             for i,step in enumerate(p["steps"],1):
                 st.markdown(f"<div class='step-row'><span class='step-number'>{i}</span><div><b>{step.get('action','')}</b></div></div>",unsafe_allow_html=True)
         with tabs[2]:
-            st.markdown("#### Decision points")
-            for x in p["decisions"]:
-                st.markdown(f"- {x}")
-            st.markdown("#### Exceptions & warnings")
-            for x in p["exceptions"]:
-                st.markdown(f"- {x}")
+            st.markdown("#### Decision points"); [st.markdown(f"- {x}") for x in p["decisions"]]; st.markdown("#### Exceptions & warnings"); [st.markdown(f"- {x}") for x in p["exceptions"]]
         with tabs[3]:
             if not versions: st.info("No version history yet.")
             for v in versions:
@@ -318,6 +308,27 @@ elif page == "Process detail":
                     with a: st.markdown(f"**Version {v['version']}**")
                     with b: st.caption(f"{v['changed_by']} · {v['created_at']}")
                     with c: st.caption(v["change_note"] or "No change note")
+                    snapshot = v.get("snapshot") or {}
+                    with st.expander(f"Open version {v['version']}"):
+                        st.markdown(f"**Purpose:** {snapshot.get('description') or 'Not specified'}")
+                        st.markdown(f"**Trigger:** {snapshot.get('trigger') or 'Not specified'}")
+                        st.markdown("**Required inputs**")
+                        for item in snapshot.get("inputs", []) or []:
+                            st.markdown(f"- {item}")
+                        st.markdown("**People / roles**")
+                        for item in snapshot.get("roles", []) or []:
+                            st.markdown(f"- {item}")
+                        st.markdown("**Workflow**")
+                        for i, step in enumerate(snapshot.get("steps", []) or [], 1):
+                            action = step.get("action", "") if isinstance(step, dict) else str(step)
+                            st.markdown(f"{i}. {action}")
+                        st.markdown("**Decisions**")
+                        for item in snapshot.get("decisions", []) or []:
+                            st.markdown(f"- {item}")
+                        st.markdown("**Exceptions / warnings**")
+                        for item in snapshot.get("exceptions", []) or []:
+                            st.markdown(f"- {item}")
+                        st.markdown(f"**Expected output:** {snapshot.get('output') or 'Not specified'}")
                     if can("edit") and st.button(f"Restore v{v['version']}",key=f"restore_{p['id']}_{v['version']}"):
                         if restore_process_version(p["id"],v["version"],st.session_state.user["id"],st.session_state.user["name"]):
                             index_process(p["id"],v["snapshot"]); log_activity("Process version restored",f"{p['name']} → v{v['version']}",st.session_state.user['name']); st.session_state.notice=f"Version {v['version']} restored as a new version."; st.rerun()
