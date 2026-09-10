@@ -1,3 +1,4 @@
+import sqlite3
 import streamlit as st
 from dotenv import load_dotenv
 
@@ -55,6 +56,65 @@ def _save_process_from_editor(values, existing_id=None, reason="Updated process"
     index_process(pid, values)
     log_activity("Process created", values["name"], st.session_state.user["name"])
     return pid
+
+
+def _delete_old_process_version(process_id, version):
+    """Delete a historical version while protecting the current/latest version."""
+    try:
+        conn = sqlite3.connect("business_brain.db")
+        conn.row_factory = sqlite3.Row
+
+        # Find the version table columns so this works with the Phase 2 schema.
+        cols = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(process_versions)").fetchall()
+        }
+        if not cols:
+            conn.close()
+            return False, "Version history table was not found."
+
+        process_col = "process_id" if "process_id" in cols else "pid" if "pid" in cols else None
+        version_col = "version" if "version" in cols else None
+
+        if not process_col or not version_col:
+            conn.close()
+            return False, "The version history schema is missing required columns."
+
+        versions = conn.execute(
+            f"SELECT {version_col} AS version FROM process_versions "
+            f"WHERE {process_col}=? ORDER BY {version_col} DESC",
+            (process_id,),
+        ).fetchall()
+
+        if not versions:
+            conn.close()
+            return False, "Version not found."
+
+        latest_version = int(versions[0]["version"])
+
+        # Never delete the current/latest version. It is the active SOP.
+        if int(version) == latest_version:
+            conn.close()
+            return False, "The current version cannot be deleted."
+
+        cur = conn.execute(
+            f"DELETE FROM process_versions WHERE {process_col}=? AND {version_col}=?",
+            (process_id, version),
+        )
+        deleted = cur.rowcount > 0
+        conn.commit()
+        conn.close()
+
+        if deleted:
+            return True, "Version deleted."
+        return False, "Version could not be deleted."
+    except Exception as exc:
+        try:
+            conn.close()
+        except Exception:
+            pass
+        return False, f"Could not delete version: {exc}"
+
 
 # ---------- Authentication ----------
 if "user" not in st.session_state:
@@ -342,9 +402,89 @@ elif page == "Process detail":
                         for item in snapshot.get("exceptions", []) or []:
                             st.markdown(f"- {item}")
                         st.markdown(f"**Expected output:** {snapshot.get('output') or 'Not specified'}")
-                    if can("edit") and st.button(f"Restore v{v['version']}",key=f"restore_{p['id']}_{v['version']}"):
-                        if restore_process_version(p["id"],v["version"],st.session_state.user["id"],st.session_state.user["name"]):
-                            index_process(p["id"],v["snapshot"]); log_activity("Process version restored",f"{p['name']} → v{v['version']}",st.session_state.user['name']); st.session_state.notice=f"Version {v['version']} restored as a new version."; st.rerun()
+                    if can("edit"):
+                        latest_version = versions[0]["version"] if versions else v["version"]
+                        action_cols = st.columns(2)
+
+                        with action_cols[0]:
+                            if st.button(
+                                f"Restore v{v['version']}",
+                                key=f"restore_{p['id']}_{v['version']}",
+                                use_container_width=True,
+                            ):
+                                if restore_process_version(
+                                    p["id"],
+                                    v["version"],
+                                    st.session_state.user["id"],
+                                    st.session_state.user["name"],
+                                ):
+                                    index_process(p["id"],v["snapshot"])
+                                    log_activity(
+                                        "Process version restored",
+                                        f"{p['name']} → v{v['version']}",
+                                        st.session_state.user["name"],
+                                    )
+                                    st.session_state.notice = (
+                                        f"Version {v['version']} restored as a new version."
+                                    )
+                                    st.rerun()
+
+                        with action_cols[1]:
+                            if int(v["version"]) == int(latest_version):
+                                st.button(
+                                    "Delete",
+                                    key=f"delete_disabled_{p['id']}_{v['version']}",
+                                    disabled=True,
+                                    use_container_width=True,
+                                )
+                            elif st.button(
+                                f"Delete v{v['version']}",
+                                key=f"delete_{p['id']}_{v['version']}",
+                                use_container_width=True,
+                            ):
+                                st.session_state[
+                                    f"confirm_delete_{p['id']}_{v['version']}"
+                                ] = True
+
+                        confirm_key = f"confirm_delete_{p['id']}_{v['version']}"
+                        if st.session_state.get(confirm_key):
+                            st.warning(
+                                f"Delete Version {v['version']} permanently? "
+                                "This removes only this historical version."
+                            )
+                            confirm_cols = st.columns(2)
+                            with confirm_cols[0]:
+                                if st.button(
+                                    "Yes, delete version",
+                                    key=f"confirm_yes_{p['id']}_{v['version']}",
+                                    type="primary",
+                                    use_container_width=True,
+                                ):
+                                    ok, message = _delete_old_process_version(
+                                        p["id"], v["version"]
+                                    )
+                                    if ok:
+                                        log_activity(
+                                            "Process version deleted",
+                                            f"{p['name']} · v{v['version']}",
+                                            st.session_state.user["name"],
+                                        )
+                                        st.session_state.pop(confirm_key, None)
+                                        st.session_state.notice = (
+                                            f"Version {v['version']} deleted."
+                                        )
+                                        st.rerun()
+                                    else:
+                                        st.error(message)
+
+                            with confirm_cols[1]:
+                                if st.button(
+                                    "Cancel",
+                                    key=f"confirm_no_{p['id']}_{v['version']}",
+                                    use_container_width=True,
+                                ):
+                                    st.session_state.pop(confirm_key, None)
+                                    st.rerun()
 
 # ---------- Activity ----------
 elif page == "Activity":
