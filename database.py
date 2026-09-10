@@ -457,13 +457,36 @@ def get_process(pid):
 
 def list_processes():
     c = _conn()
-    rows = c.execute("SELECT * FROM processes WHERE business_id=1 ORDER BY updated_at DESC").fetchall()
+    rows = c.execute(
+        "SELECT * FROM processes WHERE business_id=1 ORDER BY updated_at DESC"
+    ).fetchall()
     c.close()
-    out=[]
+
+    out = []
+
     for r in rows:
-        d=dict(r)
-        d["tags"]=json.loads(d["tags_json"])
+        d = dict(r)
+
+        for field in [
+            "inputs",
+            "roles",
+            "steps",
+            "decisions",
+            "exceptions",
+            "tags",
+        ]:
+            json_field = field + "_json"
+
+            if json_field in d:
+                try:
+                    d[field] = json.loads(d[json_field])
+                except (TypeError, json.JSONDecodeError):
+                    d[field] = []
+
+                del d[json_field]
+
         out.append(d)
+
     return out
 
 def list_knowledge():
