@@ -420,25 +420,60 @@ def format_context(results):
 
 
 def bootstrap_index():
-    """Index persisted records that do not already have chunks."""
+    """Keep the RAG index synchronized with current processes and knowledge."""
     from database import list_processes, list_knowledge
+
+    processes = list_processes()
+    knowledge_items = list_knowledge()
+
+    # Remove chunks belonging to deleted processes/knowledge
+    current_process_ids = {
+        int(p["id"])
+        for p in processes
+        if p.get("id") is not None
+    }
+
+    current_knowledge_ids = {
+        int(k["id"])
+        for k in knowledge_items
+        if k.get("id") is not None
+    }
 
     existing = list_chunks()
 
-    existing_keys = {
-        (x["source_type"], x["source_id"])
+    for row in existing:
+        source_type = row.get("source_type")
+        source_id = row.get("source_id")
+
+        try:
+            source_id = int(source_id)
+        except (TypeError, ValueError):
+            source_id = None
+
+        if source_type == "process" and source_id not in current_process_ids:
+            clear_chunks_for("process", source_id)
+
+        elif source_type == "knowledge" and source_id not in current_knowledge_ids:
+            clear_chunks_for("knowledge", source_id)
+
+    # Re-index all current processes
+    for process in processes:
+        index_process(
+            process["id"],
+            process,
+        )
+
+    # Index knowledge that does not already have chunks
+    existing = list_chunks()
+
+    existing_knowledge_keys = {
+        ("knowledge", x["source_id"])
         for x in existing
+        if x.get("source_type") == "knowledge"
     }
 
-    for process in list_processes():
-        if ("process", process["id"]) not in existing_keys:
-            index_process(
-                process["id"],
-                process,
-            )
-
-    for item in list_knowledge():
-        if ("knowledge", item["id"]) in existing_keys:
+    for item in knowledge_items:
+        if ("knowledge", item["id"]) in existing_knowledge_keys:
             continue
 
         clear_chunks_for(
@@ -446,10 +481,7 @@ def bootstrap_index():
             item["id"],
         )
 
-        for i, piece in enumerate(
-            _chunk(item["content"]),
-            1,
-        ):
+        for i, piece in enumerate(_chunk(item["content"]), 1):
             add_chunk(
                 "knowledge",
                 item["id"],
