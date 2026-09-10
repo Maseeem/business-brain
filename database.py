@@ -1,5 +1,8 @@
 import json
 import sqlite3
+import hashlib
+import hmac
+import secrets
 from datetime import datetime
 from pathlib import Path
 
@@ -39,6 +42,16 @@ def init_db():
         source_id INTEGER NOT NULL DEFAULT 0, title TEXT NOT NULL DEFAULT 'Untitled source', content TEXT NOT NULL DEFAULT '',
         metadata_json TEXT DEFAULT '{}', created_at TEXT DEFAULT ''
     );
+    CREATE TABLE IF NOT EXISTS process_versions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, process_id INTEGER NOT NULL, version INTEGER NOT NULL,
+        snapshot_json TEXT NOT NULL, changed_by_user_id INTEGER DEFAULT 0, changed_by TEXT DEFAULT 'System',
+        change_note TEXT DEFAULT '', created_at TEXT DEFAULT ''
+    );
+    CREATE TABLE IF NOT EXISTS users (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, business_id INTEGER NOT NULL DEFAULT 1,
+        name TEXT NOT NULL, username TEXT NOT NULL UNIQUE, password_hash TEXT NOT NULL, role TEXT NOT NULL DEFAULT 'Employee',
+        status TEXT DEFAULT 'Active', created_at TEXT DEFAULT ''
+    );
     CREATE TABLE IF NOT EXISTS activity (
         id INTEGER PRIMARY KEY AUTOINCREMENT, business_id INTEGER NOT NULL DEFAULT 1, action TEXT NOT NULL DEFAULT '',
         details TEXT DEFAULT '', created_at TEXT DEFAULT ''
@@ -60,9 +73,25 @@ def init_db():
         "business_id": "INTEGER NOT NULL DEFAULT 1", "source_type": "TEXT NOT NULL DEFAULT 'knowledge'",
         "source_id": "INTEGER NOT NULL DEFAULT 0", "title": "TEXT NOT NULL DEFAULT 'Untitled source'",
         "content": "TEXT NOT NULL DEFAULT ''", "metadata_json": "TEXT DEFAULT '{}'", "created_at": "TEXT DEFAULT ''"})
+    _ensure_columns(c, "process_versions", {
+        "process_id": "INTEGER NOT NULL DEFAULT 0", "version": "INTEGER NOT NULL DEFAULT 1",
+        "snapshot_json": "TEXT NOT NULL DEFAULT '{}'", "changed_by_user_id": "INTEGER DEFAULT 0",
+        "changed_by": "TEXT DEFAULT 'System'", "change_note": "TEXT DEFAULT ''", "created_at": "TEXT DEFAULT ''"})
+    _ensure_columns(c, "users", {
+        "business_id": "INTEGER NOT NULL DEFAULT 1", "name": "TEXT DEFAULT 'User'",
+        "username": "TEXT DEFAULT ''", "password_hash": "TEXT DEFAULT ''", "role": "TEXT DEFAULT 'Employee'",
+        "status": "TEXT DEFAULT 'Active'", "created_at": "TEXT DEFAULT ''"})
     _ensure_columns(c, "activity", {
         "business_id": "INTEGER NOT NULL DEFAULT 1", "action": "TEXT NOT NULL DEFAULT ''",
         "details": "TEXT DEFAULT ''", "created_at": "TEXT DEFAULT ''"})
+
+    # Backfill version 1 for processes created by older MVP databases.
+    rows = c.execute("SELECT id,name,description,category,owner,status,trigger,inputs_json,roles_json,steps_json,decisions_json,exceptions_json,output,tags_json FROM processes WHERE business_id=1").fetchall()
+    for r in rows:
+        exists = c.execute("SELECT 1 FROM process_versions WHERE process_id=? LIMIT 1", (r[0],)).fetchone()
+        if not exists:
+            snapshot = {"name":r[1],"description":r[2],"category":r[3],"owner":r[4],"status":r[5],"trigger":r[6],"inputs":json.loads(r[7] or "[]"),"roles":json.loads(r[8] or "[]"),"steps":json.loads(r[9] or "[]"),"decisions":json.loads(r[10] or "[]"),"exceptions":json.loads(r[11] or "[]"),"output":r[12],"tags":json.loads(r[13] or "[]")}
+            c.execute("INSERT INTO process_versions (process_id,version,snapshot_json,changed_by_user_id,changed_by,change_note,created_at) VALUES (?,?,?,?,?,?,?)", (r[0],1,json.dumps(snapshot),0,"System","Backfilled from existing process",datetime.now().isoformat(timespec="seconds")))
 
     c.commit()
     c.close()
@@ -166,6 +195,8 @@ def seed_demo_data():
 
     for p in demo_processes:
         _insert_process(c, p, now)
+        pid = c.execute("SELECT last_insert_rowid()").fetchone()[0]
+        _save_version(c, pid, p, 0, "System", "Demo process")
 
     demo_knowledge = [
         ("Customer Service Policy", "Policy", "Guidelines for professional customer communication and escalation.", "Customer Service Policy", ["customer-service", "policy"],
@@ -183,8 +214,34 @@ def seed_demo_data():
         VALUES (1,?,?,?,?,?,?,?,?,?)""",
                   (title, kind, desc, source, "Indexed", json.dumps(tags), content, now, now))
 
+    # Demo users for the MVP. Replace/change these credentials before production use.
+    demo_users = [
+        ("Business Owner", "admin", "BusinessBrain123!", "Owner"),
+        ("Bakery Manager", "manager", "BusinessBrain123!", "Manager"),
+        ("Team Employee", "employee", "BusinessBrain123!", "Employee"),
+    ]
+    for uname_name, username, password, role in demo_users:
+        salt = secrets.token_bytes(16)
+        digest = hashlib.pbkdf2_hmac("sha256", password.encode(), salt, 200000)
+        stored = f"pbkdf2_sha256$200000${salt.hex()}${digest.hex()}"
+        c.execute("INSERT OR IGNORE INTO users (business_id,name,username,password_hash,role,status,created_at) VALUES (1,?,?,?,?,?,?)",
+                  (uname_name, username, stored, role, "Active", now))
+
     c.commit()
     c.close()
+
+def ensure_demo_users():
+    """Ensure the MVP demo accounts exist after migrating an older database."""
+    c=_conn()
+    now=datetime.now().isoformat(timespec="seconds")
+    demo_users=[("Business Owner","admin","BusinessBrain123!","Owner"),("Bakery Manager","manager","BusinessBrain123!","Manager"),("Team Employee","employee","BusinessBrain123!","Employee")]
+    for uname_name,username,password,role in demo_users:
+        exists=c.execute("SELECT 1 FROM users WHERE username=?",(username,)).fetchone()
+        if not exists:
+            salt=secrets.token_bytes(16); digest=hashlib.pbkdf2_hmac("sha256",password.encode(),salt,200000)
+            stored=f"pbkdf2_sha256$200000${salt.hex()}${digest.hex()}"
+            c.execute("INSERT INTO users (business_id,name,username,password_hash,role,status,created_at) VALUES (1,?,?,?,?,?,?)",(uname_name,username,stored,role,"Active",now))
+    c.commit(); c.close()
 
 def _insert_process(c, p, now):
     c.execute("""INSERT INTO processes
@@ -200,21 +257,65 @@ def get_business():
     c.close()
     return dict(row)
 
+def _verify_password(stored, password):
+    try:
+        scheme, iterations, salt_hex, digest_hex = stored.split("$", 3)
+        if scheme != "pbkdf2_sha256": return False
+        calculated = hashlib.pbkdf2_hmac("sha256", password.encode(), bytes.fromhex(salt_hex), int(iterations)).hex()
+        return hmac.compare_digest(calculated, digest_hex)
+    except Exception:
+        return False
+
+def authenticate_user(username, password):
+    c = _conn()
+    row = c.execute("SELECT * FROM users WHERE username=? AND business_id=1 AND status='Active'", ((username or "").strip().lower(),)).fetchone()
+    c.close()
+    if not row or not _verify_password(row["password_hash"], password):
+        return None
+    d=dict(row); d.pop("password_hash", None); return d
+
+def list_users():
+    c=_conn(); rows=c.execute("SELECT id,name,username,role,status,created_at FROM users WHERE business_id=1 ORDER BY id").fetchall(); c.close(); return [dict(r) for r in rows]
+
+def create_user(name, username, password, role):
+    salt=secrets.token_bytes(16); digest=hashlib.pbkdf2_hmac("sha256", password.encode(), salt, 200000)
+    stored=f"pbkdf2_sha256$200000${salt.hex()}${digest.hex()}"
+    now=datetime.now().isoformat(timespec="seconds")
+    c=_conn(); c.execute("INSERT INTO users (business_id,name,username,password_hash,role,status,created_at) VALUES (1,?,?,?,?,?,?)", (name.strip(),username.strip().lower(),stored,role,"Active",now)); uid=c.execute("SELECT last_insert_rowid()").fetchone()[0]; c.commit(); c.close(); return uid
+
 def update_business(name, profile):
     c = _conn()
     c.execute("UPDATE businesses SET name=?, profile=? WHERE id=1", (name, profile))
     c.commit(); c.close()
 
-def create_process(p):
+def _snapshot_process(p):
+    return {
+        "name": p.get("name", "Untitled Process"), "description": p.get("description", ""),
+        "category": p.get("category", "Operations"), "owner": p.get("owner", "Business Owner"),
+        "status": p.get("status", "Active"), "trigger": p.get("trigger", ""),
+        "inputs": p.get("inputs", []), "roles": p.get("roles", []), "steps": p.get("steps", []),
+        "decisions": p.get("decisions", []), "exceptions": p.get("exceptions", []),
+        "output": p.get("output", ""), "tags": p.get("tags", []),
+    }
+
+def _save_version(c, process_id, p, user_id=0, changed_by="System", change_note=""):
+    row = c.execute("SELECT COALESCE(MAX(version),0) FROM process_versions WHERE process_id=?", (process_id,)).fetchone()
+    version = int(row[0] or 0) + 1
+    c.execute("INSERT INTO process_versions (process_id,version,snapshot_json,changed_by_user_id,changed_by,change_note,created_at) VALUES (?,?,?,?,?,?,?)",
+              (process_id, version, json.dumps(_snapshot_process(p)), user_id or 0, changed_by or "System", change_note or "", datetime.now().isoformat(timespec="seconds")))
+    return version
+
+def create_process(p, user_id=0, changed_by="System", change_note="Initial version"):
     now = datetime.now().isoformat(timespec="seconds")
     c = _conn()
     _insert_process(c, p, now)
     pid = c.execute("SELECT last_insert_rowid()").fetchone()[0]
+    _save_version(c, pid, p, user_id, changed_by, change_note)
     c.commit(); c.close()
     return pid
 
-def update_process(pid, p):
-    """Update an existing process while preserving its original id and creation time."""
+def update_process(pid, p, user_id=0, changed_by="System", change_note="Updated process"):
+    """Update an existing process and create a new immutable SOP version."""
     if not pid:
         return False
     now = datetime.now().isoformat(timespec="seconds")
@@ -232,8 +333,31 @@ def update_process(pid, p):
          json.dumps(p.get("exceptions", [])), p.get("output", ""),
          json.dumps(p.get("tags", [])), now, pid))
     changed = c.execute("SELECT changes()").fetchone()[0] > 0
+    if changed:
+        _save_version(c, pid, p, user_id, changed_by, change_note)
     c.commit(); c.close()
     return changed
+
+def get_process_versions(pid):
+    c = _conn()
+    rows = c.execute("SELECT * FROM process_versions WHERE process_id=? ORDER BY version DESC", (pid,)).fetchall()
+    c.close()
+    out=[]
+    for r in rows:
+        d=dict(r)
+        try: d["snapshot"] = json.loads(d.pop("snapshot_json"))
+        except Exception: d["snapshot"] = {}
+        out.append(d)
+    return out
+
+def restore_process_version(pid, version, user_id=0, changed_by="System"):
+    c = _conn()
+    row = c.execute("SELECT snapshot_json FROM process_versions WHERE process_id=? AND version=?", (pid, version)).fetchone()
+    c.close()
+    if not row:
+        return False
+    p = json.loads(row[0])
+    return update_process(pid, p, user_id, changed_by, f"Restored version {version}")
 
 def get_process(pid):
     if not pid:
@@ -297,10 +421,11 @@ def list_chunks():
     c.close()
     return [dict(r) for r in rows]
 
-def log_activity(action, details=""):
+def log_activity(action, details="", user_name="System"):
     c=_conn()
+    actor = f"{user_name}: {details}" if user_name else details
     c.execute("INSERT INTO activity (business_id,action,details,created_at) VALUES (1,?,?,?)",
-              (action, details, datetime.now().strftime("%Y-%m-%d %H:%M")))
+              (action, actor, datetime.now().strftime("%Y-%m-%d %H:%M")))
     c.commit(); c.close()
 
 def get_activity(limit=20):

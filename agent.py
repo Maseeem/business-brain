@@ -4,10 +4,20 @@ from pathlib import Path
 
 from rag import retrieve, format_context
 
-MODEL = os.getenv("GEMINI_MODEL", "gemini-3.6-flash")
+def _setting(name, default=None):
+    value = os.getenv(name)
+    if value:
+        return value
+    try:
+        import streamlit as st
+        return st.secrets.get(name, default)
+    except Exception:
+        return default
+
+MODEL = _setting("GEMINI_MODEL", "gemini-3.6-flash")
 
 def _client():
-    key=os.getenv("GEMINI_API_KEY")
+    key=_setting("GEMINI_API_KEY")
     if not key:
         return None
     from google import genai
@@ -126,6 +136,27 @@ Return ONLY valid JSON with this exact shape:
         return {"ok": True, "sop": sop, "sources": [f.name for f in uploads or []]}
     except Exception as e:
         return {"ok": False, "error": str(e)}
+
+def transcribe_audio_to_text(audio_file):
+    """Transcribe a recorded process description using Gemini multimodal audio input."""
+    client=_client()
+    if not client:
+        raise RuntimeError("GEMINI_API_KEY is not configured.")
+    from google.genai import types
+    data=audio_file.getvalue()
+    mime=audio_file.type or "audio/wav"
+    response=client.models.generate_content(
+        model=MODEL,
+        contents=[
+            types.Part.from_bytes(data=data, mime_type=mime),
+            "Transcribe this recording accurately. Preserve the speaker's business process details, names of steps, decisions, roles, exceptions, and important terms. Do not summarize or invent information. Return only the transcript as plain text."
+        ],
+        config=types.GenerateContentConfig(max_output_tokens=5000),
+    )
+    text=(response.text or "").strip()
+    if not text:
+        raise RuntimeError("Gemini returned an empty transcript.")
+    return text
 
 def answer_business_question(question):
     try:
