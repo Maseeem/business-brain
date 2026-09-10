@@ -4,8 +4,8 @@ from dotenv import load_dotenv
 
 from database import (
     init_db, seed_demo_data, get_business, list_processes, list_knowledge, get_activity,
-    get_process, create_process, update_process, get_process_versions, restore_process_version,
-    authenticate_user, list_users, create_user, update_business, log_activity, ensure_demo_users,
+    get_process, create_process, update_process, delete_process, get_process_versions, restore_process_version,
+    authenticate_user, list_users, create_user, get_user, update_user, reset_user_password, update_business, log_activity, ensure_demo_users,
 )
 from agent import generate_sop_from_inputs, answer_business_question, transcribe_audio_to_text
 from rag import ingest_knowledge_file, index_process, bootstrap_index
@@ -337,9 +337,37 @@ elif page == "Process detail":
         versions=get_process_versions(p["id"])
         st.caption(f"{p['category']} · {p['status']} · Owner: {p['owner']} · Updated {p['updated_at']} · Version {versions[0]['version'] if versions else 1}")
         if can("edit"):
-            e1,e2=st.columns([1,3])
+            e1,e2=st.columns([1,1])
             with e1:
                 if st.button("Edit process",type="primary",use_container_width=True): st.session_state.edit_process=True; st.rerun()
+            with e2:
+                if st.button("Delete process",use_container_width=True):
+                    st.session_state[f"confirm_delete_process_{p['id']}"] = True
+
+            process_delete_key = f"confirm_delete_process_{p['id']}"
+            if st.session_state.get(process_delete_key):
+                st.error(
+                    f"Delete '{p['name']}' permanently? This will remove the process, "
+                    "its version history, and its indexed search data. This cannot be undone."
+                )
+                d1,d2=st.columns(2)
+                with d1:
+                    if st.button("Yes, delete process",type="primary",use_container_width=True):
+                        process_name = p["name"]
+                        if delete_process(p["id"]):
+                            log_activity("Process deleted",f"{process_name} (ID {p['id']})",st.session_state.user["name"])
+                            st.session_state.pop(process_delete_key, None)
+                            st.session_state.pop("selected_process", None)
+                            st.session_state.pop("edit_process", None)
+                            st.session_state.notice = f"Process '{process_name}' deleted successfully."
+                            st.session_state.page = "Processes"
+                            st.rerun()
+                        else:
+                            st.error("The process could not be deleted.")
+                with d2:
+                    if st.button("Cancel",use_container_width=True):
+                        st.session_state.pop(process_delete_key, None)
+                        st.rerun()
         if st.session_state.get("edit_process"):
             st.markdown("### Edit current version")
             with st.form("edit_process_form"):
@@ -494,25 +522,99 @@ elif page == "Activity":
 
 # ---------- Settings ----------
 elif page == "Settings":
-    page_header("Settings","Manage your workspace settings.","Settings")
+    page_header("Settings", "Manage your workspace, team and access.", "Settings")
     if not can("settings"):
         st.info("Settings are available to the Owner role.")
     else:
         st.markdown("### Business profile")
         with st.form("settings"):
-            name=st.text_input("Business name",business["name"]); profile=st.text_area("Short profile",business["profile"],height=120); save=st.form_submit_button("Save changes",type="primary")
+            name = st.text_input("Business name", business["name"])
+            profile = st.text_area("Short profile", business["profile"], height=120)
+            save = st.form_submit_button("Save changes", type="primary", use_container_width=True)
         if save:
-            update_business(name.strip(),profile.strip()); log_activity("Business profile updated",name.strip(),st.session_state.user["name"]); st.success("Saved.")
+            if not name.strip():
+                st.error("Business name cannot be empty.")
+            else:
+                update_business(name.strip(), profile.strip())
+                log_activity("Business profile updated", name.strip(), st.session_state.user["name"])
+                st.session_state.notice = "Business profile updated successfully."
+                st.rerun()
+
         st.markdown("### Team & roles")
-        st.caption("Owner can create demo-ready team accounts. Passwords are stored as PBKDF2 hashes, not plain text.")
-        users=list_users()
-        for u in users:
-            st.write(f"**{u['name']}** · @{u['username']} · {u['role']} · {u['status']}")
+        st.caption("Owner-only controls: create users, change roles, activate/deactivate accounts, and reset passwords.")
+        users = list_users()
+        if users:
+            for u in users:
+                with st.container(border=True):
+                    h1, h2, h3 = st.columns([2.4, 1.2, 1.2])
+                    with h1:
+                        st.markdown(f"**{u['name']}**")
+                        st.caption(f"@{u['username']} · Created {u['created_at']}")
+                    with h2:
+                        st.write(f"**{u['role']}**")
+                        st.caption(u["status"])
+                    with h3:
+                        st.write("Active" if u["status"] == "Active" else "Inactive")
+
+                    c1, c2, c3 = st.columns(3)
+                    with c1:
+                        with st.form(f"edit_user_{u['id']}"):
+                            new_name = st.text_input("Name", u["name"], key=f"name_{u['id']}")
+                            new_role = st.selectbox("Role", ["Owner", "Manager", "Employee"], index=["Owner","Manager","Employee"].index(u["role"]), key=f"role_{u['id']}")
+                            new_status = st.selectbox("Status", ["Active", "Inactive"], index=0 if u["status"] == "Active" else 1, key=f"status_{u['id']}")
+                            update_btn = st.form_submit_button("Save user", use_container_width=True)
+                        if update_btn:
+                            try:
+                                if u["id"] == st.session_state.user["id"] and new_status == "Inactive":
+                                    st.error("You cannot deactivate the account you are currently using.")
+                                else:
+                                    update_user(u["id"], new_name, new_role, new_status)
+                                    log_activity("User updated", f"@{u['username']} · {new_role} · {new_status}", st.session_state.user["name"])
+                                    st.session_state.notice = f"User @{u['username']} updated successfully."
+                                    st.rerun()
+                            except Exception as exc:
+                                st.error(str(exc))
+                    with c2:
+                        with st.form(f"reset_pw_{u['id']}"):
+                            new_pw = st.text_input("New password", type="password", key=f"pw_{u['id']}")
+                            confirm_pw = st.text_input("Confirm password", type="password", key=f"cpw_{u['id']}")
+                            reset_btn = st.form_submit_button("Reset password", use_container_width=True)
+                        if reset_btn:
+                            if new_pw != confirm_pw:
+                                st.error("Passwords do not match.")
+                            else:
+                                try:
+                                    reset_user_password(u["id"], new_pw)
+                                    log_activity("Password reset", f"@{u['username']}", st.session_state.user["name"])
+                                    st.session_state.notice = f"Password reset for @{u['username']}."
+                                    st.rerun()
+                                except Exception as exc:
+                                    st.error(str(exc))
+                    with c3:
+                        st.markdown("**Access**")
+                        if u["id"] == st.session_state.user["id"]:
+                            st.caption("Current account")
+                        elif u["status"] == "Active":
+                            st.caption("Can sign in")
+                        else:
+                            st.caption("Sign-in blocked")
+
+        st.markdown("### Add team member")
         with st.form("new_user"):
-            n=st.text_input("Employee name"); un=st.text_input("Username"); pw=st.text_input("Temporary password",type="password"); role=st.selectbox("Role",["Manager","Employee"]); add=st.form_submit_button("Create user")
+            n = st.text_input("Full name", placeholder="Team member name")
+            un = st.text_input("Username", placeholder="e.g. sara")
+            pw = st.text_input("Temporary password", type="password", placeholder="At least 8 characters")
+            role = st.selectbox("Role", ["Manager", "Employee"])
+            add = st.form_submit_button("Create user", type="primary", use_container_width=True)
         if add:
             try:
-                create_user(n,un,pw,role); log_activity("User created",f"{un} · {role}",st.session_state.user["name"]); st.success("User created."); st.rerun()
-            except Exception as e: st.error(f"Could not create user: {e}")
+                uid = create_user(n, un, pw, role)
+                log_activity("User created", f"@{un.strip().lower()} · {role}", st.session_state.user["name"])
+                st.session_state.notice = f"User @{un.strip().lower()} created successfully."
+                st.rerun()
+            except sqlite3.IntegrityError:
+                st.error("That username is already in use. Choose another username.")
+            except Exception as exc:
+                st.error(str(exc))
 
-st.markdown("<div class='footer'>Business Brain · Phase 2 · Capture → Structure → Remember → Retrieve → Govern</div>",unsafe_allow_html=True)
+st.markdown("<div class='footer'>Business Brain · Phase 3 · Capture → Structure → Remember → Retrieve → Govern</div>",unsafe_allow_html=True)

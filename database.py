@@ -277,11 +277,72 @@ def authenticate_user(username, password):
 def list_users():
     c=_conn(); rows=c.execute("SELECT id,name,username,role,status,created_at FROM users WHERE business_id=1 ORDER BY id").fetchall(); c.close(); return [dict(r) for r in rows]
 
+def _hash_password(password):
+    salt = secrets.token_bytes(16)
+    digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, 200000)
+    return f"pbkdf2_sha256$200000${salt.hex()}${digest.hex()}"
+
 def create_user(name, username, password, role):
-    salt=secrets.token_bytes(16); digest=hashlib.pbkdf2_hmac("sha256", password.encode(), salt, 200000)
-    stored=f"pbkdf2_sha256$200000${salt.hex()}${digest.hex()}"
-    now=datetime.now().isoformat(timespec="seconds")
-    c=_conn(); c.execute("INSERT INTO users (business_id,name,username,password_hash,role,status,created_at) VALUES (1,?,?,?,?,?,?)", (name.strip(),username.strip().lower(),stored,role,"Active",now)); uid=c.execute("SELECT last_insert_rowid()").fetchone()[0]; c.commit(); c.close(); return uid
+    name = (name or "").strip()
+    username = (username or "").strip().lower()
+    password = password or ""
+    role = role if role in {"Owner", "Manager", "Employee"} else "Employee"
+    if not name or not username or not password:
+        raise ValueError("Name, username and password are required.")
+    if len(password) < 8:
+        raise ValueError("Password must be at least 8 characters.")
+    now = datetime.now().isoformat(timespec="seconds")
+    c = _conn()
+    try:
+        c.execute("INSERT INTO users (business_id,name,username,password_hash,role,status,created_at) VALUES (1,?,?,?,?,?,?)",
+                  (name, username, _hash_password(password), role, "Active", now))
+        uid = c.execute("SELECT last_insert_rowid()").fetchone()[0]
+        c.commit()
+        return uid
+    finally:
+        c.close()
+
+def get_user(user_id):
+    c = _conn()
+    row = c.execute("SELECT id,name,username,role,status,created_at FROM users WHERE id=? AND business_id=1", (user_id,)).fetchone()
+    c.close()
+    return dict(row) if row else None
+
+def update_user(user_id, name=None, role=None, status=None):
+    if not user_id:
+        return False
+    allowed_roles = {"Owner", "Manager", "Employee"}
+    allowed_status = {"Active", "Inactive"}
+    c = _conn()
+    row = c.execute("SELECT * FROM users WHERE id=? AND business_id=1", (user_id,)).fetchone()
+    if not row:
+        c.close(); return False
+    new_name = (name if name is not None else row["name"]).strip()
+    new_role = role if role in allowed_roles else row["role"]
+    new_status = status if status in allowed_status else row["status"]
+    if not new_name:
+        c.close(); raise ValueError("Name cannot be empty.")
+    # Never allow the workspace to lose its final active Owner.
+    if (row["role"] == "Owner" and row["status"] == "Active" and
+        (new_role != "Owner" or new_status != "Active")):
+        owners = c.execute("SELECT COUNT(*) FROM users WHERE business_id=1 AND role='Owner' AND status='Active'").fetchone()[0]
+        if owners <= 1:
+            c.close(); raise ValueError("The last active Owner cannot be deactivated or changed to another role.")
+    c.execute("UPDATE users SET name=?, role=?, status=? WHERE id=? AND business_id=1",
+              (new_name, new_role, new_status, user_id))
+    changed = c.execute("SELECT changes()").fetchone()[0] > 0
+    c.commit(); c.close()
+    return changed
+
+def reset_user_password(user_id, new_password):
+    new_password = new_password or ""
+    if len(new_password) < 8:
+        raise ValueError("Password must be at least 8 characters.")
+    c = _conn()
+    cur = c.execute("UPDATE users SET password_hash=? WHERE id=? AND business_id=1", (_hash_password(new_password), user_id))
+    changed = cur.rowcount > 0
+    c.commit(); c.close()
+    return changed
 
 def update_business(name, profile):
     c = _conn()
@@ -358,6 +419,27 @@ def restore_process_version(pid, version, user_id=0, changed_by="System"):
         return False
     p = json.loads(row[0])
     return update_process(pid, p, user_id, changed_by, f"Restored version {version}")
+
+def delete_process(pid):
+    """Permanently delete a process and all of its versions/indexed chunks."""
+    if not pid:
+        return False
+    c = _conn()
+    row = c.execute(
+        "SELECT id FROM processes WHERE id=? AND business_id=1", (pid,)
+    ).fetchone()
+    if not row:
+        c.close()
+        return False
+
+    # Remove indexed RAG chunks, version history, then the process itself.
+    c.execute("DELETE FROM chunks WHERE source_type='process' AND source_id=? AND business_id=1", (pid,))
+    c.execute("DELETE FROM process_versions WHERE process_id=?", (pid,))
+    c.execute("DELETE FROM processes WHERE id=? AND business_id=1", (pid,))
+    deleted = c.execute("SELECT changes()").fetchone()[0] > 0
+    c.commit()
+    c.close()
+    return deleted
 
 def get_process(pid):
     if not pid:
