@@ -292,14 +292,27 @@ elif page == "Process detail":
         with tabs[0]:
             c1,c2=st.columns(2)
             with c1:
-                st.markdown("#### Trigger"); st.write(p["trigger"] or "Not specified"); st.markdown("#### Required inputs"); [st.markdown(f"- {x}") for x in p["inputs"]]
+                st.markdown("#### Trigger")
+                st.write(p["trigger"] or "Not specified")
+                st.markdown("#### Required inputs")
+                for x in p["inputs"]:
+                    st.markdown(f"- {x}")
             with c2:
-                st.markdown("#### People / roles"); [st.markdown(f"- {x}") for x in p["roles"]]; st.markdown("#### Expected output"); st.write(p["output"] or "Not specified")
+                st.markdown("#### People / roles")
+                for x in p["roles"]:
+                    st.markdown(f"- {x}")
+                st.markdown("#### Expected output")
+                st.write(p["output"] or "Not specified")
         with tabs[1]:
             for i,step in enumerate(p["steps"],1):
                 st.markdown(f"<div class='step-row'><span class='step-number'>{i}</span><div><b>{step.get('action','')}</b></div></div>",unsafe_allow_html=True)
         with tabs[2]:
-            st.markdown("#### Decision points"); [st.markdown(f"- {x}") for x in p["decisions"]]; st.markdown("#### Exceptions & warnings"); [st.markdown(f"- {x}") for x in p["exceptions"]]
+            st.markdown("#### Decision points")
+            for x in p["decisions"]:
+                st.markdown(f"- {x}")
+            st.markdown("#### Exceptions & warnings")
+            for x in p["exceptions"]:
+                st.markdown(f"- {x}")
         with tabs[3]:
             if not versions: st.info("No version history yet.")
             for v in versions:
