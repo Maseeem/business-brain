@@ -1,6 +1,7 @@
 import io
 import re
 from pathlib import Path
+from difflib import get_close_matches
 
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
@@ -353,8 +354,54 @@ def ingest_knowledge_file(
         }
 
 
+def _expand_query(query):
+    """Add lightweight business-language variants without changing the user's question."""
+    text = re.sub(r"[^\w\s-]", " ", (query or "").casefold())
+    text = re.sub(r"\s+", " ", text).strip()
+    if not text:
+        return ""
+
+    # Small, deterministic vocabulary expansion helps natural-language questions
+    # match the structured process vocabulary used in the index.
+    aliases = {
+        "order": "orders ordering",
+        "orders": "order ordering",
+        "place": "submit create receive",
+        "placed": "submitted received created",
+        "process": "workflow procedure steps handling",
+        "work": "workflow process steps",
+        "handle": "handling manage resolve",
+        "handled": "handling manage resolve",
+        "handling": "handle manage resolve",
+        "complain": "complaint complaints issue concern",
+        "complains": "complaint complaints complain issue concern",
+        "complaint": "complaints complain issue concern handling",
+        "complaints": "complaint complain issue concern handling",
+        "customer": "customers client",
+        "customers": "customer client",
+        "information": "details requirements inputs",
+        "required": "requirements needed necessary",
+        "need": "required requirements necessary",
+        "needed": "required requirements necessary",
+        "steps": "workflow process procedure",
+    }
+
+    expanded = [text]
+    for token in text.split():
+        clean = token.strip("-_")
+        if clean in aliases:
+            expanded.append(aliases[clean])
+
+    return " ".join(expanded)
+
+
 def retrieve(query, top_k=6):
-    """Retrieve relevant chunks using TF-IDF + cosine similarity."""
+    """Retrieve relevant chunks using hybrid word + character TF-IDF.
+
+    Word n-grams capture meaning and common phrases. Character n-grams make
+    retrieval tolerant of spelling mistakes such as ``coustomer`` or
+    ``complains`` while still ranking genuinely related business content first.
+    """
     query = (query or "").strip()
 
     if not query:
@@ -365,44 +412,135 @@ def retrieve(query, top_k=6):
     if not rows:
         return []
 
-    corpus = [r.get("content", "") for r in rows]
+    corpus = [str(r.get("content", "")) for r in rows]
 
     if not any(corpus):
         return []
 
-    vectorizer = TfidfVectorizer(
-        stop_words="english",
-        ngram_range=(1, 2),
-        max_features=12000,
+    # Correct only very close spellings against words that actually exist in
+    # the Business Brain. This keeps typo tolerance useful without silently
+    # turning unrelated words into business terms.
+    corpus_vocabulary = set(
+        re.findall(r"[a-z0-9]+", " ".join(corpus).casefold())
     )
+    raw_tokens = re.findall(r"[a-z0-9]+", query.casefold())
+    corrected_tokens = []
+    informative_matches = 0
+    informative_unmatched = 0
+    generic_tokens = {
+        "how", "what", "when", "where", "why", "who", "does", "do",
+        "did", "our", "your", "the", "a", "an", "is", "are", "to",
+        "of", "for", "with", "and", "or", "can", "i", "we", "you",
+        "my", "me", "in", "on", "about", "work", "handle", "process",
+        "new", "place", "placed", "create", "creating", "receive", "receiving",
+    }
+
+    for token in raw_tokens:
+        if token in corpus_vocabulary:
+            corrected_tokens.append(token)
+            if token not in generic_tokens:
+                informative_matches += 1
+            continue
+
+        if len(token) >= 5:
+            close = get_close_matches(
+                token,
+                corpus_vocabulary,
+                n=1,
+                cutoff=0.72,
+            )
+            if close:
+                corrected_tokens.append(close[0])
+                if token not in generic_tokens:
+                    informative_matches += 1
+                continue
+
+        corrected_tokens.append(token)
+        if token not in generic_tokens and len(token) >= 4:
+            informative_unmatched += 1
+
+    corrected_query = " ".join(corrected_tokens)
+    expanded_query = _expand_query(corrected_query)
+
+    # If the question contains specific terms that cannot be matched to the
+    # stored business vocabulary, do not retrieve a generic-looking answer.
+    # Example: a deleted/unsupported "salon appointment" question should not
+    # accidentally retrieve a bakery complaint process just because both use
+    # the word "customer".
+    specific_tokens = [
+        t for t in raw_tokens
+        if t not in generic_tokens and len(t) >= 4
+    ]
+    if specific_tokens and informative_matches == 0:
+        return []
+
+    if (
+        specific_tokens
+        and informative_unmatched > 0
+        and informative_unmatched / len(specific_tokens) >= 0.5
+    ):
+        return []
 
     try:
-        matrix = vectorizer.fit_transform(
-            corpus + [query]
+        word_vectorizer = TfidfVectorizer(
+            stop_words="english",
+            ngram_range=(1, 2),
+            max_features=12000,
+            sublinear_tf=True,
         )
-
-        scores = cosine_similarity(
-            matrix[-1],
-            matrix[:-1],
+        word_matrix = word_vectorizer.fit_transform(corpus + [expanded_query])
+        word_scores = cosine_similarity(
+            word_matrix[-1],
+            word_matrix[:-1],
         ).flatten()
-
     except ValueError:
-        return []
+        word_scores = [0.0] * len(rows)
+
+    try:
+        char_vectorizer = TfidfVectorizer(
+            analyzer="char_wb",
+            ngram_range=(3, 5),
+            min_df=1,
+            max_features=20000,
+            sublinear_tf=True,
+        )
+        char_matrix = char_vectorizer.fit_transform(corpus + [query])
+        char_scores = cosine_similarity(
+            char_matrix[-1],
+            char_matrix[:-1],
+        ).flatten()
+    except ValueError:
+        char_scores = [0.0] * len(rows)
 
     results = []
 
-    for idx in scores.argsort()[::-1][:max(int(top_k), 1)]:
-        # Ignore weak/no-match results so unrelated business data
-        # does not get presented as evidence.
-        if scores[idx] <= 0.07:
+    for idx, row in enumerate(rows):
+        word_score = float(word_scores[idx])
+        char_score = float(char_scores[idx])
+        score = (0.60 * word_score) + (0.40 * char_score)
+
+        # Give an additional small signal when the query contains terms that
+        # appear in the source title. This is especially useful for questions
+        # such as "how do we handle customer complaints?".
+        title = str(row.get("title", "")).casefold()
+        title_tokens = set(re.findall(r"[a-z0-9]+", title))
+        query_tokens = set(re.findall(r"[a-z0-9]+", expanded_query))
+        title_overlap = len(title_tokens & query_tokens)
+        if title_overlap:
+            score += min(0.14, 0.05 * title_overlap)
+
+        # Keep only meaningful matches. The threshold is deliberately lower
+        # than the old 0.07 cutoff because character similarity can produce
+        # useful evidence for misspelled questions.
+        if score < 0.045:
             continue
 
-        row = rows[idx].copy()
-        row["score"] = float(scores[idx])
-        results.append(row)
+        item = row.copy()
+        item["score"] = float(score)
+        results.append(item)
 
-    return results
-
+    results.sort(key=lambda item: item["score"], reverse=True)
+    return results[:max(int(top_k), 1)]
 
 def format_context(results):
     """Format retrieval results for the Gemini prompt."""
