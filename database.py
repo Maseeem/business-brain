@@ -509,6 +509,40 @@ def create_knowledge(title, kind, description, source, tags, content):
     c.commit(); c.close()
     return kid
 
+
+def get_knowledge(knowledge_id):
+    c = _conn()
+    row = c.execute("SELECT * FROM knowledge WHERE business_id=1 AND id=?", (knowledge_id,)).fetchone()
+    c.close()
+    if not row:
+        return None
+    d = dict(row)
+    d["tags"] = json.loads(d.get("tags_json") or "[]")
+    return d
+
+def update_knowledge(knowledge_id, title, kind, description, source, tags, content):
+    now = datetime.now().isoformat(timespec="seconds")
+    c = _conn()
+    cur = c.execute(
+        """UPDATE knowledge
+           SET title=?, type=?, description=?, source=?, tags_json=?, content=?, status='Indexed', updated_at=?
+           WHERE business_id=1 AND id=?""",
+        (title, kind, description, source, json.dumps(tags or []), content, now, knowledge_id),
+    )
+    c.commit()
+    changed = cur.rowcount > 0
+    c.close()
+    return changed
+
+def delete_knowledge(knowledge_id):
+    c = _conn()
+    c.execute("DELETE FROM chunks WHERE source_type='knowledge' AND source_id=?", (knowledge_id,))
+    cur = c.execute("DELETE FROM knowledge WHERE business_id=1 AND id=?", (knowledge_id,))
+    c.commit()
+    changed = cur.rowcount > 0
+    c.close()
+    return changed
+
 def add_chunk(source_type, source_id, title, content, metadata=None):
     c=_conn()
     c.execute("""INSERT INTO chunks

@@ -3,12 +3,12 @@ import streamlit as st
 from dotenv import load_dotenv
 
 from database import (
-    init_db, seed_demo_data, get_business, list_processes, list_knowledge, get_activity,
+    init_db, seed_demo_data, get_business, list_processes, list_knowledge, get_activity, get_knowledge,
     get_process, create_process, update_process, delete_process, get_process_versions, restore_process_version,
     authenticate_user, list_users, create_user, get_user, update_user, reset_user_password, update_business, log_activity, ensure_demo_users,
 )
 from agent import generate_sop_from_inputs, answer_business_question, transcribe_audio_to_text
-from rag import ingest_knowledge_file, index_process, bootstrap_index
+from rag import ingest_knowledge_file, edit_knowledge_item, remove_knowledge_item, detect_knowledge_contradictions, index_process, bootstrap_index
 from ui import inject_css, sidebar, page_header, stat_card, empty_state, source_card
 
 load_dotenv()
@@ -254,25 +254,121 @@ elif page == "Knowledge":
             st.info("Employees can view knowledge and ask Brain, but only Managers and Owners can add it.")
         else:
             with st.form("knowledge_form"):
-                title=st.text_input("Title",placeholder="e.g. Customer Service Policy"); kind=st.selectbox("Type",["Policy","FAQ","Guide","Document","Product info","Note","Other"]); tags=st.text_input("Tags",placeholder="orders, customer-service"); text=st.text_area("Notes / text",height=180,placeholder="Paste useful business knowledge here."); file=st.file_uploader("Or upload a file",type=["pdf","docx","txt","md","csv","xlsx","png","jpg","jpeg","webp"]); save_k=st.form_submit_button("Add to Business Brain",type="primary",use_container_width=True)
+                title=st.text_input("Title",placeholder="e.g. Customer Service Policy")
+                kind=st.selectbox("Type",["Policy","FAQ","Guide","Document","Product info","Note","Other"])
+                tags=st.text_input("Tags",placeholder="orders, customer-service")
+                text=st.text_area("Notes / text",height=180,placeholder="Paste useful business knowledge here.")
+                file=st.file_uploader("Or upload a file",type=["pdf","docx","txt","md","csv","xlsx","png","jpg","jpeg","webp"])
+                save_k=st.form_submit_button("Add to Business Brain",type="primary",use_container_width=True)
             if save_k:
                 if not title.strip(): st.error("Give this knowledge item a title.")
                 elif not text.strip() and not file: st.error("Add some text or upload a file.")
                 else:
-                    with st.spinner("Extracting, structuring and indexing…"): result=ingest_knowledge_file(title,kind,tags,file,text)
-                    if result.get("duplicate"): st.info("This knowledge item already exists in your Business Brain. Nothing new was added.")
-                    elif result.get("ok"): st.session_state.notice="Knowledge added and indexed successfully."; st.rerun()
-                    else: st.error(result.get("error","Something went wrong while adding knowledge."))
+                    with st.spinner("Extracting, structuring and indexing…"):
+                        result=ingest_knowledge_file(title,kind,tags,file,text)
+                    if result.get("duplicate"):
+                        st.info("This knowledge item already exists in your Business Brain. Nothing new was added.")
+                    elif result.get("ok"):
+                        st.session_state.notice="Knowledge added and indexed successfully."
+                        st.rerun()
+                    else:
+                        st.error(result.get("error","Something went wrong while adding knowledge."))
+
     with tabs[1]:
         knowledge=list_knowledge()
-        if not knowledge: empty_state("Your knowledge base is empty","Add policies, guides, FAQs and documents.")
+        conflicts=detect_knowledge_contradictions(knowledge)
+
+        if conflicts:
+            st.warning(f"⚠️ {len(conflicts)} possible information contradiction(s) detected. Review the affected knowledge items before relying on them.")
+            for conflict in conflicts:
+                st.markdown(
+                    f"**Possible conflict:** `{conflict['a_title']}` ↔ `{conflict['b_title']}`  \n"
+                    f"{conflict['reason']}"
+                )
+
+        if not knowledge:
+            empty_state("Your knowledge base is empty","Add policies, guides, FAQs and documents.")
+
         for k in knowledge:
+            kid=k["id"]
+            edit_key=f"edit_knowledge_{kid}"
+            delete_key=f"confirm_delete_knowledge_{kid}"
             with st.container(border=True):
-                a,b,c=st.columns([4,1.2,1.2]);
-                with a: st.markdown(f"**{k['title']}**"); st.caption(k["description"] or "Business knowledge source")
+                a,b,c,d=st.columns([4,1.1,1.1,1.6])
+                with a:
+                    st.markdown(f"**{k['title']}**")
+                    st.caption(k["description"] or "Business knowledge source")
+                    if k["tags"]: st.caption(" · ".join(k["tags"]))
                 with b: st.caption(k["type"])
                 with c: st.caption(k["status"])
-                if k["tags"]: st.caption(" · ".join(k["tags"]))
+                with d:
+                    x1,x2=st.columns(2)
+                    with x1:
+                        if st.button("Open",key=f"open_k_{kid}",use_container_width=True):
+                            st.session_state[f"view_knowledge_{kid}"]=True
+                            st.rerun()
+                    with x2:
+                        if can("edit"):
+                            if st.button("Edit",key=f"edit_btn_{kid}",use_container_width=True):
+                                st.session_state[edit_key]=True
+                                st.rerun()
+
+                if st.session_state.get(f"view_knowledge_{kid}"):
+                    st.markdown("#### Knowledge details")
+                    st.caption(f"Source: {k.get('source') or 'Manual note'} · Updated: {k.get('updated_at','')}")
+                    st.text_area("Saved content",value=k.get("content",""),height=260,key=f"view_content_{kid}",disabled=True)
+                    if st.button("Close",key=f"close_k_{kid}"):
+                        st.session_state.pop(f"view_knowledge_{kid}",None)
+                        st.rerun()
+
+                if st.session_state.get(edit_key) and can("edit"):
+                    st.markdown("#### Edit knowledge")
+                    with st.form(f"knowledge_edit_form_{kid}"):
+                        new_title=st.text_input("Title",value=k["title"])
+                        type_options=["Policy","FAQ","Guide","Document","Product info","Note","Other"]
+                        current_type=k.get("type","Document")
+                        new_kind=st.selectbox("Type",type_options,index=type_options.index(current_type) if current_type in type_options else 0)
+                        new_tags=st.text_input("Tags",value=", ".join(k.get("tags",[])))
+                        new_text=st.text_area("Content",value=k.get("content",""),height=260)
+                        save_edit=st.form_submit_button("Save changes",type="primary",use_container_width=True)
+                    if save_edit:
+                        result=edit_knowledge_item(kid,new_title,new_kind,new_tags,new_text)
+                        if result.get("duplicate"):
+                            st.warning(result["message"])
+                        elif result.get("ok"):
+                            st.session_state.notice=f"Knowledge '{new_title}' updated and re-indexed successfully."
+                            st.session_state.pop(edit_key,None)
+                            st.rerun()
+                        else:
+                            st.error(result.get("error","Knowledge could not be updated."))
+                    if st.button("Cancel edit",key=f"cancel_edit_{kid}"):
+                        st.session_state.pop(edit_key,None)
+                        st.rerun()
+
+                if can("edit"):
+                    if st.button("Delete",key=f"delete_btn_{kid}"):
+                        st.session_state[delete_key]=True
+                        st.rerun()
+                    if st.session_state.get(delete_key):
+                        st.error(
+                            f"Delete '{k['title']}' permanently? Its stored content and indexed search data will be removed."
+                        )
+                        y1,y2=st.columns(2)
+                        with y1:
+                            if st.button("Yes, delete knowledge",type="primary",key=f"yes_delete_{kid}",use_container_width=True):
+                                result=remove_knowledge_item(kid)
+                                if result.get("ok"):
+                                    st.session_state.pop(delete_key,None)
+                                    st.session_state.pop(edit_key,None)
+                                    st.session_state.pop(f"view_knowledge_{kid}",None)
+                                    st.session_state.notice=f"Knowledge '{result['title']}' deleted successfully."
+                                    st.rerun()
+                                else:
+                                    st.error(result.get("error","Knowledge could not be deleted."))
+                        with y2:
+                            if st.button("Cancel",key=f"cancel_delete_{kid}",use_container_width=True):
+                                st.session_state.pop(delete_key,None)
+                                st.rerun()
 
 # ---------- Ask Brain ----------
 elif page == "Ask Brain":
@@ -296,8 +392,7 @@ elif page == "Ask Brain":
         st.session_state.chat.append({"role":"user","content":question})
         with st.chat_message("user"): st.markdown(question)
         with st.chat_message("assistant"):
-            with st.spinner("Searching your Business Brain…"):
-                result = answer_business_question(question)
+            with st.spinner("Searching your Business Brain…"): result=answer_business_question(question, conversation=st.session_state.chat)
             if result["ok"]:
                 st.markdown(result["answer"])
                 if result["sources"]:

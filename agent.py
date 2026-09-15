@@ -2,7 +2,7 @@ import json
 import os
 from pathlib import Path
 
-from rag import retrieve, format_context
+from rag import retrieve, format_context, contradictions_for_results
 from database import list_processes
 
 def _setting(name, default=None):
@@ -207,6 +207,18 @@ def answer_business_question(question, conversation=None):
             return {"ok": True, "answer":"I couldn't find enough information in your Business Brain to answer this confidently.", "sources":[]}
 
         context=format_context(results)
+        conflicts=contradictions_for_results(results)
+        conflict_instruction = ""
+        if conflicts:
+            conflict_lines = "\n".join(
+                f"- {c['a_title']} conflicts with {c['b_title']}: {c['reason']}"
+                for c in conflicts
+            )
+            conflict_instruction = f"""
+IMPORTANT: The retrieval system detected possible contradictions between stored sources:
+{conflict_lines}
+If these sources disagree, explicitly flag the conflict and do not silently choose one value.
+"""
         prompt=f"""
 You are Business Brain, a read-only business knowledge assistant.
 Answer the user's question using ONLY the retrieved business sources below.
@@ -228,6 +240,8 @@ Resolved conversation context (use only to identify the user's intended process,
 Retrieved business context:
 {context}
 
+{conflict_instruction}
+
 If the context is insufficient, respond exactly with:
 "I couldn't find enough information in your Business Brain to answer this confidently."
 """
@@ -244,6 +258,6 @@ If the context is insufficient, respond exactly with:
                     "score":r["score"],
                     "content":r["content"][:360],
                 })
-        return {"ok":True,"answer":answer,"sources":sources}
+        return {"ok":True,"answer":answer,"sources":sources,"conflicts":conflicts}
     except Exception as e:
         return {"ok":False,"error":f"Business Brain could not answer right now: {e}"}

@@ -9,6 +9,9 @@ from sklearn.metrics.pairwise import cosine_similarity
 
 from database import (
     create_knowledge,
+    update_knowledge,
+    delete_knowledge,
+    get_knowledge,
     add_chunk,
     clear_chunks_for,
     list_chunks,
@@ -303,95 +306,161 @@ def ingest_text_knowledge(title, kind, tags, text):
         }
 
 
-def ingest_knowledge_file(
-    title,
-    kind,
-    tags,
-    uploaded_file=None,
-    text="",
-):
+def _prepare_knowledge_content(uploaded_file=None, text=""):
+    extracted = (text or "").strip()
+    if uploaded_file:
+        ext = Path(uploaded_file.name).suffix.lower()
+        extracted = _extract_text_from_upload(uploaded_file).strip()
+        if ext in {".png", ".jpg", ".jpeg", ".webp"}:
+            from agent import analyze_image_for_knowledge
+            extracted = analyze_image_for_knowledge(uploaded_file).strip()
+    return extracted
+
+def _index_knowledge_item(item):
+    kid = item["id"]
+    clear_chunks_for("knowledge", kid)
+    pieces = _knowledge_chunks(item)
+    for i, piece in enumerate(pieces, 1):
+        add_chunk(
+            "knowledge", kid, item["title"], piece,
+            {"chunk": i, "type": item["type"], "source": item.get("source", "")}
+        )
+    return len(pieces)
+
+def ingest_knowledge_file(title, kind, tags, uploaded_file=None, text=""):
     """Create and index knowledge from typed text or an uploaded file."""
     try:
         title = (title or "").strip() or "Untitled knowledge"
         kind = (kind or "Note").strip() or "Note"
-        source = (
-            uploaded_file.name
-            if uploaded_file
-            else "Manual note"
-        )
-
-        extracted = (text or "").strip()
-
-        if uploaded_file:
-            ext = Path(uploaded_file.name).suffix.lower()
-            extracted = _extract_text_from_upload(uploaded_file).strip()
-
-            if ext in {".png", ".jpg", ".jpeg", ".webp"}:
-                from agent import analyze_image_for_knowledge
-
-                extracted = analyze_image_for_knowledge(
-                    uploaded_file
-                ).strip()
-
+        source = uploaded_file.name if uploaded_file else "Manual note"
+        extracted = _prepare_knowledge_content(uploaded_file, text)
         if not extracted:
-            return {
-                "ok": False,
-                "error": "The source did not contain readable content.",
-            }
-
-        # Prevent the same title + content from being added again.
-        # A different title or changed content is still allowed.
+            return {"ok": False, "error": "The source did not contain readable content."}
         if _is_duplicate_knowledge(title, extracted):
-            return {
-                "ok": True,
-                "duplicate": True,
-                "message": "This knowledge item already exists.",
-            }
-
-        tag_list = [
-            x.strip()
-            for x in (tags or "").split(",")
-            if x.strip()
-        ]
-
-        kid = create_knowledge(
-            title,
-            kind,
-            extracted[:220],
-            source,
-            tag_list,
-            extracted,
-        )
-
-        clear_chunks_for("knowledge", kid)
-
-        for i, piece in enumerate(_chunk(extracted), 1):
-            add_chunk(
-                "knowledge",
-                kid,
-                title,
-                piece,
-                {
-                    "chunk": i,
-                    "type": kind,
-                    "source": source,
-                },
-            )
-
+            return {"ok": True, "duplicate": True, "message": "This knowledge item already exists."}
+        tag_list = [x.strip() for x in (tags or "").split(",") if x.strip()]
+        kid = create_knowledge(title, kind, extracted[:220], source, tag_list, extracted)
+        item = get_knowledge(kid)
+        _index_knowledge_item(item)
         log_activity("Knowledge added", title)
-
-        return {
-            "ok": True,
-            "duplicate": False,
-            "id": kid,
-        }
-
+        return {"ok": True, "duplicate": False, "id": kid}
     except Exception as e:
-        return {
-            "ok": False,
-            "error": f"Could not index this knowledge item: {e}",
-        }
+        return {"ok": False, "error": f"Knowledge could not be added: {e}"}
 
+def edit_knowledge_item(knowledge_id, title, kind, tags, text, source=None):
+    """Update a knowledge item and rebuild its retrieval index."""
+    try:
+        existing = get_knowledge(knowledge_id)
+        if not existing:
+            return {"ok": False, "error": "Knowledge item not found."}
+        title = (title or "").strip()
+        kind = (kind or "Note").strip() or "Note"
+        content = (text or "").strip()
+        if not title:
+            return {"ok": False, "error": "Give this knowledge item a title."}
+        if not content:
+            return {"ok": False, "error": "Knowledge content cannot be empty."}
+        if _is_duplicate_knowledge(title, content) and not (
+            _normalize_for_duplicate(existing.get("title")) == _normalize_for_duplicate(title)
+            and _normalize_for_duplicate(existing.get("content")) == _normalize_for_duplicate(content)
+        ):
+            return {"ok": True, "duplicate": True, "message": "Another knowledge item already has the same title and content."}
+        tag_list = [x.strip() for x in (tags or "").split(",") if x.strip()]
+        changed_source = source if source is not None else existing.get("source", "Manual note")
+        changed = update_knowledge(
+            knowledge_id, title, kind, existing.get("description", "") or content[:220],
+            changed_source, tag_list, content
+        )
+        if not changed:
+            return {"ok": False, "error": "Knowledge item could not be updated."}
+        item = get_knowledge(knowledge_id)
+        _index_knowledge_item(item)
+        log_activity("Knowledge updated", title)
+        return {"ok": True, "id": knowledge_id}
+    except Exception as e:
+        return {"ok": False, "error": f"Knowledge could not be updated: {e}"}
+
+def remove_knowledge_item(knowledge_id):
+    """Delete a knowledge item and all of its indexed chunks."""
+    try:
+        item = get_knowledge(knowledge_id)
+        if not item:
+            return {"ok": False, "error": "Knowledge item not found."}
+        if delete_knowledge(knowledge_id):
+            log_activity("Knowledge deleted", item["title"])
+            return {"ok": True, "title": item["title"]}
+        return {"ok": False, "error": "Knowledge item could not be deleted."}
+    except Exception as e:
+        return {"ok": False, "error": f"Knowledge could not be deleted: {e}"}
+
+def _knowledge_chunks(item):
+    """Create focused knowledge chunks around headings/sections for better retrieval."""
+    title = str(item.get("title", "Untitled knowledge"))
+    content = str(item.get("content", ""))
+    tags = _as_list(item.get("tags", []))
+    if not content.strip():
+        return []
+
+    # First preserve the normal overlapping chunks. Then add compact section chunks
+    # so queries like "main products" can hit the exact section instead of a large mixed chunk.
+    chunks = []
+    for piece in _chunk(content, size=900, overlap=120):
+        chunks.append(f"Knowledge: {title}\nTags: {', '.join(tags)}\n{piece}")
+
+    lines = [x.strip() for x in re.split(r"\n+", content) if x.strip()]
+    heading_re = re.compile(r"^(?:\d+[.)]\s*)?[A-Z][A-Za-z &/&-]{2,80}$")
+    current_heading = None
+    current = []
+    sections = []
+    for line in lines:
+        is_heading = bool(heading_re.match(line)) and (
+            line.lower().startswith(("main products", "business overview", "cake information",
+                                     "custom cake order process", "new customer order process",
+                                     "order requirements", "pricing guide", "customer complaint handling",
+                                     "refund", "customer service", "inventory", "roles & responsibilities",
+                                     "useful business questions", "business brain grounding", "demo summary"))
+            or line[:1].isdigit()
+        )
+        if is_heading:
+            if current_heading and current:
+                sections.append((current_heading, current))
+            current_heading = line
+            current = []
+        elif current_heading:
+            current.append(line)
+    if current_heading and current:
+        sections.append((current_heading, current))
+
+    for heading, body in sections:
+        section_text = f"Knowledge: {title}\nSection: {heading}\n" + "\n".join(body)
+        if len(section_text) > 40:
+            chunks.append(section_text)
+    # De-duplicate exact section/chunk text while preserving order.
+    return list(dict.fromkeys(chunks))
+
+KNOWLEDGE_QUERY_TERMS = {
+    "product", "products", "offering", "offerings", "offer", "menu",
+    "items", "item", "sell", "sells", "provide", "available",
+    "cakes", "cake", "flavors", "food", "policy", "policies",
+    "refund", "refunds", "price", "pricing", "payment", "payments",
+}
+
+KNOWLEDGE_EXPANSIONS = {
+    "product": ["products", "items", "offerings", "menu", "available"],
+    "products": ["product", "items", "offerings", "menu", "available"],
+    "offer": ["offering", "offerings", "products", "items", "menu"],
+    "offerings": ["offer", "products", "items", "menu", "available"],
+    "menu": ["products", "items", "offerings", "available"],
+    "items": ["products", "product", "offerings", "menu"],
+    "cakes": ["cake", "products", "birthday", "celebration", "wedding", "custom"],
+    "cake": ["cakes", "products", "birthday", "celebration", "wedding", "custom"],
+    "refund": ["refunds", "return", "policy", "days"],
+    "refunds": ["refund", "return", "policy", "days"],
+    "price": ["pricing", "cost", "amount"],
+    "pricing": ["price", "cost", "amount"],
+    "payment": ["payments", "deposit", "cash", "card"],
+    "payments": ["payment", "deposit", "cash", "card"],
+}
 
 ROLE_TERMS = {
     "role", "roles", "people", "person", "team", "teams", "staff",
@@ -425,6 +494,7 @@ def _expand_query(query):
     expanded = list(tokens)
     for token in tokens:
         expanded.extend(ROLE_EXPANSIONS.get(token, []))
+        expanded.extend(KNOWLEDGE_EXPANSIONS.get(token, []))
     # Preserve the exact query and its expanded terms for TF-IDF.
     return original + " " + " ".join(expanded)
 
@@ -474,6 +544,7 @@ def retrieve(query, top_k=6):
 
     q_tokens, title_tokens = _find_process_title_tokens(query, rows)
     role_query = bool(q_tokens & ROLE_TERMS)
+    knowledge_query = bool(q_tokens & KNOWLEDGE_QUERY_TERMS)
     scored = []
 
     for idx, row in enumerate(rows):
@@ -486,6 +557,25 @@ def retrieve(query, top_k=6):
         # Strong boost when the user explicitly names a stored process.
         if row.get("source_type") == "process" and title_overlap:
             score += min(0.22, 0.11 * title_overlap)
+
+        # Knowledge/product questions should favor knowledge sources and focused sections.
+        if knowledge_query and row.get("source_type") == "knowledge":
+            if any(term in content_tokens for term in {"products", "product", "offerings", "menu", "available"}):
+                score += 0.16
+            if "main" in content_tokens and "products" in content_tokens:
+                score += 0.10
+            if title_overlap:
+                score += 0.10
+            # Prefer the exact business section requested by the query. This keeps
+            # product questions from being satisfied by a later list of suggested
+            # questions or an unrelated inventory/pricing section.
+            content_lower = str(row.get("content", "")).casefold()
+            if "main products" in content_lower and (q_tokens & {"product", "products", "offer", "offerings", "items", "menu"}):
+                score += 0.70
+            if "useful business questions" in content_lower and (q_tokens & {"product", "products", "offer", "offerings", "items", "menu"}):
+                score -= 0.35
+            if "cake information" in content_lower and (q_tokens & {"cake", "cakes", "flavors"}):
+                score += 0.28
 
         # Role questions should favor chunks that explicitly contain the roles section.
         if role_query and row.get("source_type") == "process":
@@ -567,6 +657,55 @@ def format_context(results):
     return "\n\n".join(blocks)
 
 
+def _meaningful_tokens(text):
+    return {t for t in _tokenize(text) if len(t) >= 4 and t not in {
+        "this","that","what","which","where","when","does","do","are","the","and","for","with","from","only"
+    }}
+
+def _conflict_signature(text):
+    text = str(text or "")
+    numbers = re.findall(r"\b\d+(?:\.\d+)?\s*(?:%|percent|days?|hours?|weeks?|months?|minutes?)?\b", text.lower())
+    money = re.findall(r"(?:rs\.?|pkr|\$|usd|eur|£)\s*\d+(?:,\d{3})*(?:\.\d+)?", text.lower())
+    neg = re.findall(r"\b(?:not|no|never|cannot|can't|does not|doesn't|must not|required|optional)\b", text.lower())
+    return set(numbers + money), set(neg)
+
+def detect_knowledge_contradictions(knowledge_items=None):
+    """
+    Detect likely conflicts between stored knowledge items. This is intentionally
+    conservative: it only flags highly related items where explicit numeric/value
+    evidence differs or negation language differs.
+    """
+    items = knowledge_items if knowledge_items is not None else list_knowledge()
+    conflicts=[]
+    for i,a in enumerate(items):
+        at=_meaningful_tokens((a.get("title","")+" "+a.get("content","")))
+        an, ag=_conflict_signature(a.get("content",""))
+        if not at: continue
+        for b in items[i+1:]:
+            bt=_meaningful_tokens((b.get("title","")+" "+b.get("content","")))
+            if not bt: continue
+            overlap=len(at & bt)/max(1,min(len(at),len(bt)))
+            bn, bg=_conflict_signature(b.get("content",""))
+            numeric_conflict=bool(an and bn and an != bn and (an & bn or overlap >= .25))
+            neg_conflict=bool(ag and bg and ag != bg and overlap >= .35)
+            # Same topic with materially different explicit values is the strongest signal.
+            if overlap >= .45 and (numeric_conflict or neg_conflict):
+                conflicts.append({
+                    "a_id":a["id"], "a_title":a["title"],
+                    "b_id":b["id"], "b_title":b["title"],
+                    "reason":"Different explicit values or policy language found in highly related knowledge.",
+                    "overlap":round(overlap,2),
+                })
+    return conflicts
+
+def contradictions_for_results(results):
+    """Return conflicts among knowledge sources represented in retrieval results."""
+    ids={int(x["source_id"]) for x in results if x.get("source_type")=="knowledge" and x.get("source_id") is not None}
+    if len(ids)<2:
+        return []
+    items=[x for x in list_knowledge() if int(x["id"]) in ids]
+    return detect_knowledge_contradictions(items)
+
 def bootstrap_index():
     """Keep the RAG index synchronized with current processes and knowledge."""
     from database import list_processes, list_knowledge
@@ -594,16 +733,12 @@ def bootstrap_index():
     for process in processes:
         index_process(process["id"], process)
 
-    # Add missing knowledge chunks without disturbing existing knowledge data.
-    existing = list_chunks()
-    existing_knowledge_keys = {
-        ("knowledge", x["source_id"])
-        for x in existing if x.get("source_type") == "knowledge"
-    }
+    # Re-index all knowledge items so older generic chunks are upgraded to focused
+    # section chunks (for example, a dedicated Main Products chunk).
     for item in knowledge_items:
-        if ("knowledge", item["id"]) in existing_knowledge_keys:
-            continue
         clear_chunks_for("knowledge", item["id"])
-        for i, piece in enumerate(_chunk(item["content"]), 1):
-            add_chunk("knowledge", item["id"], item["title"], piece,
-                      {"chunk": i, "type": item["type"], "source": item["source"]})
+        for i, piece in enumerate(_knowledge_chunks(item), 1):
+            add_chunk(
+                "knowledge", item["id"], item["title"], piece,
+                {"chunk": i, "type": item["type"], "source": item["source"]}
+            )
