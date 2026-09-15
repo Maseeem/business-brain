@@ -3,6 +3,7 @@ import os
 from pathlib import Path
 
 from rag import retrieve, format_context
+from database import list_processes
 
 def _setting(name, default=None):
     value = os.getenv(name)
@@ -158,9 +159,50 @@ def transcribe_audio_to_text(audio_file):
         raise RuntimeError("Gemini returned an empty transcript.")
     return text
 
-def answer_business_question(question):
+def _is_context_dependent_question(question):
+    q=(question or '').lower()
+    markers=[
+        "this process", "that process", "this workflow", "that workflow",
+        "is process", "iss process", "is workflow", "iss workflow",
+        "ye process", "ya process", "ye workflow", "ya workflow",
+        "is process ko", "iss process ko", "ye process ko", "ya process ko",
+        "is ko kaun", "iss ko kaun", "ye kaun", "ya kaun",
+    ]
+    return any(m in q for m in markers)
+
+def _recent_process_title(conversation):
+    """Return the most recently mentioned exact stored process title, if any."""
     try:
-        results=retrieve(question, top_k=6)
+        processes=list_processes()
+        titles=[p.get("name") or p.get("process_name") or p.get("title") for p in processes]
+        titles=[t for t in titles if t]
+        messages=conversation or []
+        # Search newest user messages first so the immediate topic wins.
+        for msg in reversed(messages):
+            if msg.get("role") != "user":
+                continue
+            text=str(msg.get("content") or "")
+            low=text.lower()
+            matches=[t for t in titles if t.lower() in low]
+            if matches:
+                return max(matches, key=len)
+    except Exception:
+        pass
+    return None
+
+def _resolve_conversation_context(question, conversation=None):
+    """Safely resolve anaphoric process references using only recent chat context."""
+    if not _is_context_dependent_question(question):
+        return question, None
+    title=_recent_process_title(conversation)
+    if not title:
+        return question, None
+    return f'{question} [Conversation context: the process being discussed is exactly "{title}".]', title
+
+def answer_business_question(question, conversation=None):
+    try:
+        retrieval_question, resolved_process=_resolve_conversation_context(question, conversation)
+        results=retrieve(retrieval_question, top_k=6)
         if not results:
             return {"ok": True, "answer":"I couldn't find enough information in your Business Brain to answer this confidently.", "sources":[]}
 
@@ -179,6 +221,9 @@ Rules:
 
 User question:
 {question}
+
+Resolved conversation context (use only to identify the user's intended process, not as business evidence):
+{resolved_process or "None"}
 
 Retrieved business context:
 {context}
