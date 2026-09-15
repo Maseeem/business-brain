@@ -3,7 +3,7 @@ import streamlit as st
 from dotenv import load_dotenv
 
 from database import (
-    init_db, seed_demo_data, get_business, list_processes, list_knowledge, get_activity, get_knowledge,
+    init_db, seed_demo_data, get_business, list_processes, list_knowledge, get_activity,
     get_process, create_process, update_process, delete_process, get_process_versions, restore_process_version,
     authenticate_user, list_users, create_user, get_user, update_user, reset_user_password, update_business, log_activity, ensure_demo_users,
 )
