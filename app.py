@@ -297,7 +297,7 @@ elif page == "Ask Brain":
         with st.chat_message("user"): st.markdown(question)
         with st.chat_message("assistant"):
             with st.spinner("Searching your Business Brain…"):
-    result = answer_business_question(question)
+                result = answer_business_question(question)
             if result["ok"]:
                 st.markdown(result["answer"])
                 if result["sources"]:
