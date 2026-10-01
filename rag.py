@@ -512,13 +512,13 @@ def _find_process_title_tokens(query, rows):
     return q_tokens, title_tokens
 
 
-def retrieve(query, top_k=6):
+def retrieve(query, top_k=6, business_id=1):
     """Hybrid retrieval with role-aware expansion, title boosts and grounded relevance gates."""
     query = (query or "").strip()
     if not query:
         return []
 
-    rows = list_chunks()
+    rows = list_chunks(business_id)
     if not rows:
         return []
     corpus = [r.get("content", "") for r in rows]

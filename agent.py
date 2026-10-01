@@ -4,6 +4,7 @@ from pathlib import Path
 
 from rag import retrieve, format_context, contradictions_for_results
 from database import list_processes
+from business_qa import answer_live_business_question
 
 def _setting(name, default=None):
     value = os.getenv(name)
@@ -199,8 +200,11 @@ def _resolve_conversation_context(question, conversation=None):
         return question, None
     return f'{question} [Conversation context: the process being discussed is exactly "{title}".]', title
 
-def answer_business_question(question, conversation=None):
+def answer_business_question(question, conversation=None, business_id=1):
     try:
+        live = answer_live_business_question(question, business_id)
+        if live is not None:
+            return live
         retrieval_question, resolved_process=_resolve_conversation_context(question, conversation)
         results=retrieve(retrieval_question, top_k=6)
         if not results:

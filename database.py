@@ -3,7 +3,7 @@ import sqlite3
 import hashlib
 import hmac
 import secrets
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 DB_PATH = Path("business_brain.db")
@@ -614,9 +614,9 @@ def add_chunk(source_type, source_id, title, content, metadata=None):
 def clear_chunks_for(source_type, source_id):
     c=_conn(); c.execute("DELETE FROM chunks WHERE source_type=? AND source_id=?", (source_type, source_id)); c.commit(); c.close()
 
-def list_chunks():
+def list_chunks(business_id=1):
     c=_conn()
-    rows=c.execute("SELECT * FROM chunks WHERE business_id=1 ORDER BY id").fetchall()
+    rows=c.execute("SELECT * FROM chunks WHERE business_id=? ORDER BY id", (business_id,)).fetchall()
     c.close()
     return [dict(r) for r in rows]
 
@@ -963,6 +963,49 @@ def create_supplier_order(supplier_id, items, created_by=0, business_id=1):
 def save_receipt_verification(sale_id, status, extracted_receipt, mismatches, created_by=0, business_id=1):
     c=_conn(); now=datetime.now().isoformat(timespec="seconds")
     cur=c.execute("INSERT INTO receipt_verifications (business_id,sale_id,status,extracted_receipt_json,mismatches_json,created_by,created_at) VALUES (?,?,?,?,?,?,?)", (business_id,sale_id,status,json.dumps(extracted_receipt or {}),json.dumps(mismatches or []),created_by,now)); rid=cur.lastrowid; c.commit(); c.close(); return rid
+
+
+# ---------- Operational reporting helpers ----------
+def query_sales_summary(business_id=1, days=None):
+    """Return deterministic sales aggregation from SQLite for the active business."""
+    c = _conn()
+    try:
+        if days is None:
+            where = "business_id=?"
+            params = [business_id]
+        else:
+            days = max(int(days), 1)
+            start = (datetime.now().date() - timedelta(days=days - 1)).isoformat()
+            where = "business_id=? AND date(created_at)>=?"
+            params = [business_id, start]
+        row = c.execute(
+            f"SELECT COUNT(*) AS order_count, COALESCE(SUM(total),0) AS sales_total "
+            f"FROM sales WHERE {where} AND status='Confirmed'",
+            params,
+        ).fetchone()
+        return {"order_count": int(row["order_count"] or 0), "sales_total": float(row["sales_total"] or 0)}
+    finally:
+        c.close()
+
+
+def query_today_sales(business_id=1):
+    """Confirmed sales total and count for today, scoped to business_id."""
+    today = datetime.now().date().isoformat()
+    c = _conn()
+    try:
+        row = c.execute(
+            "SELECT COUNT(*) AS order_count, COALESCE(SUM(total),0) AS sales_total "
+            "FROM sales WHERE business_id=? AND status='Confirmed' AND date(created_at)=?",
+            (business_id, today),
+        ).fetchone()
+        return {"order_count": int(row["order_count"] or 0), "sales_total": float(row["sales_total"] or 0)}
+    finally:
+        c.close()
+
+
+def query_sales_last_days(business_id=1, days=7):
+    """Confirmed sales total and count for the inclusive last-N-day window."""
+    return query_sales_summary(business_id, days)
 
 # ---------- Operational reporting helpers ----------
 def get_daily_operations(business_id=1):

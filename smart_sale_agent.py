@@ -3,6 +3,7 @@ import re
 from product_tools import find_product_tool
 from cart_tools import create_cart, add_item, calculate_subtotal, calculate_total
 from database import list_products
+from agent_runtime import crew_json
 
 NUMBER_WORDS = {
     "zero":0,"one":1,"two":2,"three":3,"four":4,"five":5,"six":6,"seven":7,"eight":8,"nine":9,"ten":10,
@@ -22,60 +23,160 @@ def _norm(s):
     s=_normalize_digits(s).lower()
     return re.sub(r"[^\w\s-]", " ", s, flags=re.UNICODE).strip()
 
+def _quantity_markers(text):
+    number_pattern = r"\d+(?:\.\d+)?|one|two|three|four|five|six|seven|eight|nine|ten|ek|aik|do|du|teen|tin|char|chaar|paanch|panch|che|chay|saat|aath|nau|das|ایک|اک|دو|تین|تِن|چار|پانچ|چھ|سات|آٹھ|آٹھ|نو|دس|دونوں"
+    return list(re.finditer(rf"(?<!\w)({number_pattern})(?=\s*(?:kg|kilo|kilos|kilogram|kilograms|کلو|کلوگرام|liter|litre|ltr|لٹر|لیٹر|pcs|piece|pieces|pack|packs|پیک|پیکٹ)?\s+|\s*$)", _norm(text), flags=re.I))
+
+
+def _match_catalog_phrase(phrase, catalog):
+    phrase_norm = _norm(phrase)
+    best = None
+    best_len = 0
+    for product in catalog:
+        aliases = [product["name"]] + [a.strip() for a in str(product.get("aliases", "")).split(",") if a.strip()]
+        for alias in aliases:
+            a = _norm(alias)
+            if a and re.search(rf"(?<!\w){re.escape(a)}(?!\w)", phrase_norm) and len(a) > best_len:
+                best, best_len = product, len(a)
+    return best
+
+
 def _fallback_extract(text, catalog):
-    q=_norm(text)
-    found=[]
-    ordered=sorted(catalog,key=lambda p:max([len(_norm(p["name"]))]+[len(_norm(a)) for a in str(p.get("aliases","")).split(",") if a.strip()]),reverse=True)
-    number_pattern=r"(?:\d+(?:\.\d+)?|one|two|three|four|five|six|seven|eight|nine|ten|ek|aik|do|du|teen|tin|char|chaar|paanch|panch|che|chay|saat|aath|nau|das|ایک|اک|دو|تین|تِن|چار|پانچ|چھ|سات|آٹھ|آٹھ|نو|دس|دونوں)"
-    unit_pattern=r"(?:kg|kilo|kilos|kilogram|kilograms|کلو|کلوگرام|liter|litre|ltr|لٹر|لیٹر|pcs|piece|pieces|pack|packs|پیک|پیکٹ)?"
+    """Deterministically extract every quantity/name chunk, including unknown products."""
+    normalized = _norm(text)
+    markers = _quantity_markers(text)
+    items = []
+    if markers:
+        for idx, marker in enumerate(markers):
+            qty = _words_to_number(marker.group(1))
+            if qty is None or qty <= 0:
+                continue
+            start = marker.end()
+            end = markers[idx + 1].start() if idx + 1 < len(markers) else len(normalized)
+            segment = normalized[start:end]
+            segment = re.sub(r"^(?:kg|kilo|kilos|kilogram|kilograms|کلو|کلوگرام|liter|litre|ltr|لٹر|لیٹر|pcs|piece|pieces|pack|packs|پیک|پیکٹ)\s*", "", segment, flags=re.I)
+            segment = re.sub(r"\s*(?:aur|and|or|,|،|;|\+|&)+\s*$", "", segment, flags=re.I).strip()
+            if not segment:
+                continue
+            product = _match_catalog_phrase(segment, catalog)
+            if product:
+                items.append({"product_id": product["id"], "quantity": qty})
+            else:
+                # Keep the exact user-understood unknown item visible to callers.
+                unknown_name = re.sub(r"\s+", " ", segment).strip(" ,،;|+")
+                if unknown_name:
+                    items.append({"unknown_name": unknown_name, "quantity": qty})
+        if items:
+            return {"items": items}
+
+    # Fallback for product-first forms such as "Pepsi 2".
+    found = []
+    ordered = sorted(catalog, key=lambda p: max([len(_norm(p["name"]))] + [len(_norm(a)) for a in str(p.get("aliases", "")).split(",") if a.strip()]), reverse=True)
     for product in ordered:
-        aliases=[product["name"]]+[a.strip() for a in str(product.get("aliases","")).split(",") if a.strip()]
-        matched=None
-        for alias in sorted(aliases,key=len,reverse=True):
-            a=_norm(alias)
-            if a and re.search(rf"(?<!\w){re.escape(a)}(?!\w)",q):
-                matched=a; break
-        if not matched: continue
-        qty=1.0
-        # Quantity immediately before product, including Urdu/Roman Urdu words.
-        pats=[
-            rf"({number_pattern})\s*{unit_pattern}\s*{re.escape(matched)}",
-            rf"({number_pattern})\s*{re.escape(matched)}",
-            rf"{re.escape(matched)}\s*(?:x|×)?\s*({number_pattern})",
-        ]
-        for pat in pats:
-            m=re.search(pat,q)
+        aliases = [product["name"]] + [a.strip() for a in str(product.get("aliases", "")).split(",") if a.strip()]
+        for alias in sorted(aliases, key=len, reverse=True):
+            a = _norm(alias)
+            if not a or not re.search(rf"(?<!\w){re.escape(a)}(?!\w)", normalized):
+                continue
+            qty = 1.0
+            m = re.search(rf"{re.escape(a)}\s*(?:x|×)?\s*(\d+(?:\.\d+)?)", normalized, flags=re.I)
             if m:
-                n=_words_to_number(m.group(1))
-                if n is not None: qty=n
-                break
-        found.append({"product_id":product["id"],"quantity":qty})
-    return {"items":found}
+                qty = float(m.group(1))
+            found.append({"product_id": product["id"], "quantity": qty})
+            break
+    return {"items": found}
+
 
 def extract_order(text: str, business_id: int = 1) -> dict:
-    catalog=[{"id":p["id"],"name":p["name"],"aliases":p.get("aliases","") or "","unit":p.get("unit","unit")} for p in list_products(business_id)]
-    # Deterministic product/quantity extraction is the source of truth. Do not let an LLM replace
-    # a clearly matched product with an unrelated hallucinated product.
-    return {"items":[{"product":next(p for p in catalog if p["id"]==x["product_id"]),"quantity":x["quantity"]} for x in _fallback_extract(text,catalog)["items"]]}
+    catalog = [{"id": p["id"], "name": p["name"], "aliases": p.get("aliases", "") or "", "unit": p.get("unit", "unit")} for p in list_products(business_id)]
+    extracted = _fallback_extract(text, catalog)
+    raw_items = list(extracted["items"])
+
+    # Product-first edits such as "Tissue 3 kar do" are handled separately.
+    # This is additive: the generic quantity-first parser remains responsible for
+    # preserving unknown items in mixed orders.
+    known_ids = {x.get("product_id") for x in raw_items if x.get("product_id") is not None}
+    normalized = _norm(text)
+    for product in catalog:
+        aliases = [product["name"]] + [a.strip() for a in str(product.get("aliases", "")).split(",") if a.strip()]
+        for alias in sorted(aliases, key=len, reverse=True):
+            a = _norm(alias)
+            if not a or not re.search(rf"(?<!\w){re.escape(a)}(?!\w)", normalized):
+                continue
+            m = re.search(rf"{re.escape(a)}\s*(?:x|×)?\s*(\d+(?:\.\d+)?)", normalized, flags=re.I)
+            if m and product["id"] not in known_ids:
+                raw_items.append({"product_id": product["id"], "quantity": float(m.group(1))})
+                known_ids.add(product["id"])
+            break
+
+    items = []
+    unknown = []
+    for item in raw_items:
+        if "product_id" in item:
+            product = next(p for p in catalog if p["id"] == item["product_id"])
+            items.append({"product": product, "quantity": item["quantity"]})
+        else:
+            unknown.append({"name": item["unknown_name"], "quantity": item["quantity"]})
+    return {"items": items, "unknown_items": unknown}
 
 def build_cart(text: str, business_id: int = 1) -> dict:
-    parsed=extract_order(text,business_id); cart=create_cart(); missing_price=[]
+    parsed = extract_order(text, business_id)
+    cart = create_cart()
+    missing_price = []
     for item in parsed["items"]:
-        product=find_product_tool(item["product"]["name"],business_id)
-        if not product: continue
-        price=product.get("price")
-        qty=float(item["quantity"])
-        stock=float(product.get("stock_quantity",0) or 0)
+        product = find_product_tool(item["product"]["name"], business_id)
+        if not product:
+            continue
+        price = product.get("price")
+        qty = float(item["quantity"])
+        stock = float(product.get("stock_quantity", 0) or 0)
         cart.append({
-            "product_id":product["id"],"name":product["name"],"quantity":qty,
-            "unit_price":(float(price) if price is not None else None),
-            "subtotal":(calculate_subtotal(qty,float(price)) if price is not None else None),
-            "unit":product.get("unit","unit"),"stock_quantity":stock,
+            "product_id": product["id"], "name": product["name"], "quantity": qty,
+            "unit_price": (float(price) if price is not None else None),
+            "subtotal": (calculate_subtotal(qty, float(price)) if price is not None else None),
+            "unit": product.get("unit", "unit"), "stock_quantity": stock,
         })
-        if price is None: missing_price.append(product["name"])
-    priced=[x for x in cart if x.get("subtotal") is not None]
-    total=round(sum(x["subtotal"] for x in priced),2) if priced else 0.0
-    return {"cart":cart,"total":total,"missing_price":missing_price,"parsed_items":parsed["items"]}
+        if price is None:
+            missing_price.append(product["name"])
+    priced = [x for x in cart if x.get("subtotal") is not None]
+    total = round(sum(x["subtotal"] for x in priced), 2) if priced else 0.0
+    return {
+        "cart": cart,
+        "total": total,
+        "missing_price": missing_price,
+        "parsed_items": parsed["items"],
+        "unknown_items": parsed.get("unknown_items", []),
+        "unknown_products": parsed.get("unknown_items", []),
+    }
+
+
+def execute_sale_request(text: str, business_id: int = 1) -> dict:
+    """Run the real Smart Sale Agent layer, then deterministic sale tools.
+
+    CrewAI decides only that this is a cart-building workflow. It never receives
+    authority to set prices, stock, subtotals, totals, or inventory changes.
+    """
+    fallback = {"action": "build_cart"}
+    prompt = f"""You are the Business Brain Smart Sale Agent.
+Interpret the request only as an order-understanding/orchestration task.
+Return JSON only: {{"action":"build_cart"}}
+Never calculate price, stock, subtotal, total, or inventory changes.
+Those values come from SQLite and deterministic Python tools.
+Business ID: {business_id}
+Order: {text}"""
+    plan = crew_json(
+        "Smart Sale Agent",
+        "Interpret customer sale requests and hand them to deterministic cart tools.",
+        "You are a sales workflow specialist. Business calculations are never performed by the language model.",
+        prompt,
+        fallback=fallback,
+    )
+    if not isinstance(plan, dict) or plan.get("action") != "build_cart":
+        plan = fallback
+    result = build_cart(text, business_id)
+    result["agent"] = "smart_sale"
+    result["agent_plan"] = plan
+    return result
 
 def apply_cart_edit(cart, action: str, business_id: int = 1) -> dict:
     parsed=extract_order(action,business_id)

@@ -2,6 +2,7 @@ import json
 import os
 from decimal import Decimal, InvalidOperation
 from difflib import SequenceMatcher
+from agent_runtime import crew_json
 
 
 def _to_decimal(value):
@@ -97,6 +98,21 @@ If a field is unreadable, use null. Do not calculate or guess missing values. Do
 
 
 def verify_receipt(image_bytes: bytes, mime_type: str, expected_items: list, expected_total: float) -> dict:
+    """Execute the Receipt Agent layer, then Vision extraction and Python comparison."""
+    fallback = {"action": "extract_and_compare"}
+    prompt = """You are the Business Brain Receipt Agent.
+Prepare the receipt-verification workflow. Return JSON only: {"action":"extract_and_compare"}.
+Do not calculate totals and do not decide whether the receipt matches.
+Gemini Vision extracts visible fields; deterministic Python compares them to the saved order."""
+    plan = crew_json(
+        "Receipt Agent",
+        "Orchestrate receipt extraction and deterministic verification.",
+        "You are a receipt-verification specialist. Vision reads the document; Python is the authority for all financial comparison.",
+        prompt,
+        fallback=fallback,
+    )
+    if not isinstance(plan, dict) or plan.get("action") != "extract_and_compare":
+        plan = fallback
     extracted = _extract_receipt_with_gemini(image_bytes, mime_type)
     comparison = compare_receipt_to_order(extracted, expected_items, expected_total)
-    return {"extracted": extracted, **comparison}
+    return {"extracted": extracted, **comparison, "agent": "receipt", "agent_plan": plan}
