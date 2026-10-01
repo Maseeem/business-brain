@@ -120,3 +120,7 @@ business-brain-main/
 ## Limitations
 
 SQLite is intentionally used for a simple deployable project. Voice and receipt features depend on API availability and image/audio clarity. Supplier orders are drafts until a permitted user approves them.
+
+
+## GitHub Upload
+This distribution is intentionally flat for GitHub web upload. All Python modules are in the repository root; no manual folder creation is required. Streamlit configuration is optional.

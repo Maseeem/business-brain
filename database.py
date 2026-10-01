@@ -840,7 +840,7 @@ def save_receipt_verification(sale_id, status, extracted_receipt, mismatches, cr
 def get_daily_operations(business_id=1):
     c = _conn()
     today = datetime.now().date().isoformat()
-    low = c.execute("SELECT id,name,stock_quantity,minimum_stock,unit FROM products WHERE business_id=? AND active=1 AND stock_quantity<=minimum_stock ORDER BY name", (business_id,)).fetchall()
+    low = c.execute("SELECT id,name,stock_quantity AS stock,minimum_stock,unit FROM products WHERE business_id=? AND active=1 AND stock_quantity<=minimum_stock ORDER BY name", (business_id,)).fetchall()
     sales_today = c.execute("SELECT COUNT(*) AS n, COALESCE(SUM(total),0) AS total FROM sales WHERE business_id=? AND date(created_at)=?", (business_id,today)).fetchone()
     pending_orders = c.execute("SELECT COUNT(*) AS n FROM supplier_orders WHERE business_id=? AND status IN ('Draft','Pending Approval')", (business_id,)).fetchone()[0]
     recent = c.execute("SELECT id,transaction_ref,total,status,created_at FROM sales WHERE business_id=? ORDER BY id DESC LIMIT 8", (business_id,)).fetchall()

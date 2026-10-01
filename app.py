@@ -10,11 +10,11 @@ from database import (
     get_daily_operations, create_sale, create_sale_items, get_sale, approve_supplier_order, list_supplier_orders,
 )
 from agent import generate_sop_from_inputs, answer_business_question, transcribe_audio_to_text
-from agents.coordinator_agent import route_request
-from agents.smart_sale_agent import build_cart, apply_cart_edit
-from agents.operations_agent import low_stock_items, supplier_draft, classify_operation_request
-from agents.knowledge_agent import answer as knowledge_answer
-from agents.receipt_agent import verify_receipt
+from coordinator_agent import route_request
+from smart_sale_agent import build_cart, apply_cart_edit
+from operations_agent import low_stock_items, supplier_draft, classify_operation_request
+from knowledge_agent import answer as knowledge_answer
+from receipt_agent import verify_receipt
 from rag import ingest_knowledge_file, edit_knowledge_item, remove_knowledge_item, detect_knowledge_contradictions, index_process, bootstrap_index
 from ui import inject_css, sidebar, page_header, stat_card, empty_state, source_card
 
@@ -166,6 +166,7 @@ if "draft_sources" not in st.session_state: st.session_state.draft_sources = []
 if "notice" not in st.session_state: st.session_state.notice = None
 if "sale_cart" not in st.session_state: st.session_state.sale_cart = []
 if "sale_last_id" not in st.session_state: st.session_state.sale_last_id = None
+if "sale_voice_transcript" not in st.session_state: st.session_state.sale_voice_transcript = ""
 
 sidebar(business)
 with st.sidebar:
@@ -230,9 +231,12 @@ elif page == "Smart Sale":
             try:
                 with st.spinner("Transcribing order…"):
                     st.session_state.sale_input_value = transcribe_audio_to_text(audio)
+                    st.session_state.sale_voice_transcript = st.session_state.sale_input_value
                 st.success("Voice order transcribed. Review it before pricing.")
             except Exception:
                 st.error("I couldn't transcribe that recording. Please try again or type the order.")
+        if st.session_state.get("sale_voice_transcript"):
+            st.markdown("<div class='premium-card' style='margin:.5rem 0'><div class='eyebrow'>I understood</div><div style='font-size:1.05rem;line-height:1.55'>" + st.session_state.sale_voice_transcript.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;") + "</div><div class='muted'>Review the transcript, then click <b>Understand Order</b>.</div></div>", unsafe_allow_html=True)
         order = st.text_area("⌨️ Type Order", value=st.session_state.get("sale_input_value", ""), placeholder="1 Pepsi, 2 tissue aur 1 Surf", height=105, key="sale_input")
         c1, c2 = st.columns(2)
         with c1:
@@ -256,6 +260,7 @@ elif page == "Smart Sale":
                 st.session_state.sale_cart = []
                 st.session_state.sale_last_id = None
                 st.session_state.sale_input_value = ""
+                st.session_state.sale_voice_transcript = ""
                 st.rerun()
         if st.session_state.sale_cart:
             st.markdown("### 2 · Review cart")
@@ -265,7 +270,7 @@ elif page == "Smart Sale":
                 with b: st.write(f"× {item['quantity']:g}")
                 with c: st.write(f"Rs. {item['unit_price']:,.2f}")
                 with d: st.write(f"Rs. {item['subtotal']:,.2f}")
-            from tools.cart_tools import calculate_total
+            from cart_tools import calculate_total
             total = calculate_total(st.session_state.sale_cart)
             st.markdown(f"<div class='premium-card'><div class='eyebrow'>Deterministic total</div><div class='big-number'>Rs. {total:,.2f}</div><div class='muted'>Calculated by Python from database prices.</div></div>", unsafe_allow_html=True)
             edit = st.text_input("Edit current cart", placeholder="Tissue 3 kar do", key="cart_edit")
@@ -283,7 +288,7 @@ elif page == "Smart Sale":
                 try:
                     import uuid
                     ref = f"BB-{uuid.uuid4().hex[:8].upper()}"
-                    from tools.database_tools import save_sale
+                    from database_tools import save_sale
                     sale_id = save_sale(ref, total, st.session_state.sale_cart, st.session_state.user["id"], business_id)
                     st.session_state.sale_last_id = sale_id
                     log_activity("Sale confirmed", f"{ref} · Rs. {total:,.2f}", st.session_state.user["name"], business_id)
@@ -329,11 +334,15 @@ elif page == "Daily Operations":
         st.markdown("### What needs attention?")
         if not data["low_stock"]: st.success("No low-stock products right now.")
         for item in data["low_stock"]:
-            st.markdown(f"<div class='premium-card' style='margin:.45rem 0'><span class='status-pill'>LOW STOCK</span><br><b>{item['name']}</b><div class='muted'>{item['stock']:g} {item['unit']} available · minimum {item['minimum_stock']:g}</div></div>",unsafe_allow_html=True)
+            stock = float(item.get("stock", item.get("stock_quantity", 0)) or 0)
+            minimum_stock = float(item.get("minimum_stock", 0) or 0)
+            unit = item.get("unit", "unit") or "unit"
+            name = item.get("name", "Unknown product")
+            st.markdown(f"<div class='premium-card' style='margin:.45rem 0'><span class='status-pill'>LOW STOCK</span><br><b>{name}</b><div class='muted'>{stock:g} {unit} available · minimum {minimum_stock:g}</div></div>",unsafe_allow_html=True)
             if st.button(f"Create draft · {item['name']}",key=f"draft_{item['id']}",use_container_width=True):
                 try:
                     draft=supplier_draft(item["id"],business_id,None,st.session_state.user["id"])
-                    from tools.supplier_tools import create_supplier_order_draft
+                    from supplier_tools import create_supplier_order_draft
                     order_id=create_supplier_order_draft(draft["supplier"]["id"],[{"product_id":item["id"],"quantity":draft["suggested_quantity"],"unit_price":draft["supplier"].get("supplier_price")}],st.session_state.user["id"],business_id)
                     log_activity("Supplier order draft created",f"{draft['supplier']['name']} · {item['name']} × {draft['suggested_quantity']:g}",st.session_state.user["name"],business_id)
                     st.success(f"Draft #{order_id} created. Approval is still required.")
