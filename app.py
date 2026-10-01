@@ -6,9 +6,9 @@ from dotenv import load_dotenv
 from database import (
     init_db, seed_demo_data, seed_operational_data, get_business, list_processes, list_knowledge, get_activity,
     get_process, create_process, update_process, delete_process, get_process_versions, restore_process_version,
-    authenticate_user, list_users, create_user, update_user, reset_user_password, update_business, log_activity, ensure_demo_users,
-    get_daily_operations, get_sale, approve_supplier_order, list_supplier_orders,
-    list_products, update_product, bulk_add_products,
+    authenticate_user, list_users, create_user, get_user, update_user, reset_user_password, update_business, log_activity, ensure_demo_users,
+    get_daily_operations, create_sale, create_sale_items, get_sale, approve_supplier_order, list_supplier_orders,
+    list_products, create_product, update_product, bulk_add_products, set_product_price,
     add_business_memory, list_business_memory, delete_business_memory,
 )
 from agent import generate_sop_from_inputs, answer_business_question, transcribe_audio_to_text
@@ -235,15 +235,26 @@ elif page == "Smart Sale":
     with col1:
         st.markdown("### 1 · Capture order")
         audio = st.audio_input("🎙️ Speak Order", key="sale_audio")
-        if audio and st.button("Transcribe voice order", use_container_width=True):
+        if audio:
             try:
-                with st.spinner("Transcribing order…"):
-                    st.session_state.sale_input_value = transcribe_audio_to_text(audio)
-                st.success("Voice order transcribed. Review it before pricing.")
+                audio_bytes = audio.getvalue()
+                import hashlib
+                audio_key = hashlib.sha256(audio_bytes).hexdigest()
+                if st.session_state.get("sale_audio_key") != audio_key:
+                    with st.spinner("Understanding your voice order…"):
+                        transcript = transcribe_audio_to_text(audio)
+                        st.session_state.sale_input_value = transcript
+                        st.session_state.sale_audio_key = audio_key
+                        if transcript.strip():
+                            result = build_cart(transcript, business_id)
+                            st.session_state.sale_missing_price = result.get("missing_price", [])
+                            st.session_state.sale_cart = result.get("cart", [])
+                            st.session_state.sale_route = route_request(transcript)
+                            st.session_state.sale_voice_understood = True
             except Exception:
-                st.error("I couldn't transcribe that recording. Please try again or type the order.")
+                st.error("I couldn't understand that recording. Please try again or type the order.")
         if st.session_state.get("sale_input_value"):
-            st.markdown(f"<div class='premium-card' style='margin:.55rem 0'><div class='eyebrow'>I understood</div><div style='font-size:1.05rem;font-weight:650;margin-top:.25rem'>{st.session_state.sale_input_value}</div><div class='muted'>Review the transcript, then click Understand Order.</div></div>",unsafe_allow_html=True)
+            st.markdown(f"<div class='premium-card' style='margin:.55rem 0'><div class='eyebrow'>I understood</div><div style='font-size:1.05rem;font-weight:650;margin-top:.25rem'>{st.session_state.sale_input_value}</div><div class='muted'>The voice order has been converted into your cart. You can edit the text and press Understand Order if you want to change it.</div></div>",unsafe_allow_html=True)
         order = st.text_area("⌨️ Type Order", value=st.session_state.get("sale_input_value", ""), placeholder="1 Pepsi, 2 tissue aur 1 Surf", height=105, key="sale_input")
         c1, c2 = st.columns(2)
         with c1:
@@ -272,6 +283,8 @@ elif page == "Smart Sale":
                 st.session_state.sale_cart = []
                 st.session_state.sale_last_id = None
                 st.session_state.sale_input_value = ""
+                st.session_state.sale_audio_key = None
+                st.session_state.sale_voice_understood = False
                 st.rerun()
         if st.session_state.sale_cart:
             st.markdown("### 2 · Review cart")
@@ -332,55 +345,104 @@ elif page == "Smart Sale":
 # ---------- Inventory / Product Catalog ----------
 elif page == "Inventory":
     business_id=current_business_id()
-    page_header("Inventory", "Your shop products, prices and stock. Add many products at once; only prices need your input.", "Shop Catalog")
+    page_header("Shop Catalog", "Add products quickly, then set the real selling prices your shop uses.", "Inventory")
+
     products=list_products(business_id)
+
     with st.container(border=True):
         st.markdown("### Add products quickly")
-        st.caption("Write one product per line. Business Brain will add them to this shop only.")
-        names=st.text_area("Product names",placeholder="Atta\nSooji\nCheeni\nChawal\nSurf\nSabun\nPepsi",height=150,label_visibility="collapsed")
-        if st.button("Add products",type="primary",use_container_width=True):
+        st.caption("One product per line. You can add as many as you want; prices are never invented by Business Brain.")
+        names=st.text_area(
+            "Product names",
+            placeholder="Atta\nPapad\nNimko\nSurf\nSabun\nPepsi",
+            height=130,
+            label_visibility="collapsed",
+            key="catalog_bulk_names",
+        )
+        if st.button("＋ Add products",type="primary",use_container_width=True,key="catalog_add_products"):
             lines=[x.strip() for x in names.splitlines() if x.strip()]
-            if not lines: st.warning("Write at least one product name.")
+            if not lines:
+                st.warning("Write at least one product name.")
             else:
                 result=bulk_add_products(lines,business_id)
-                if result["created"]: log_activity("Products added",", ".join(result["created"]),st.session_state.user["name"],business_id)
-                st.success(f"Added {len(result['created'])} product(s). Now set their prices below.")
-                if result["existing"]: st.info("Already in catalog: " + ", ".join(result["existing"]))
+                if result["created"]:
+                    log_activity("Products added",", ".join(result["created"]),st.session_state.user["name"],business_id)
+                if result["created"]:
+                    st.success(f"Added {len(result['created'])} product(s). Now set their prices below.")
+                if result["existing"]:
+                    st.info("Already in catalog: " + ", ".join(result["existing"]))
                 st.rerun()
+
     st.markdown("<div class='section-gap'></div>",unsafe_allow_html=True)
+
     if not products:
-        empty_state("No products yet","Add your shop items above.")
+        empty_state("No products yet","Add your shop items above. Their prices will stay empty until you enter them.")
     else:
         st.markdown("### Your products")
-        for product in products:
-            with st.container(border=True):
-                a,b,c,d=st.columns([2.4,1.1,1.2,1.4])
-                with a:
-                    st.markdown(f"**{product['name']}**")
-                    st.caption(f"{product.get('unit','unit')} · aliases: {product.get('aliases','') or product['name']}")
-                with b: st.metric("Price", "Not set" if product.get("price") is None else f"Rs. {product['price']:,.0f}")
-                with c: st.metric("Stock", f"{float(product.get('stock_quantity') or 0):g}")
-                with d: st.metric("Minimum", f"{float(product.get('minimum_stock') or 0):g}")
-                with st.expander("Edit product"):
-                    with st.form(f"product_edit_{product['id']}"):
-                        e1,e2=st.columns(2)
-                        with e1:
-                            new_price=st.number_input("Selling price",min_value=0.0,value=float(product["price"] or 0),step=1.0,format="%.2f")
-                            new_unit=st.text_input("Unit",value=product.get("unit") or "unit")
-                            new_stock=st.number_input("Current stock",min_value=0.0,value=float(product.get("stock_quantity") or 0),step=1.0,format="%.2f")
-                        with e2:
-                            new_min=st.number_input("Minimum stock",min_value=0.0,value=float(product.get("minimum_stock") or 0),step=1.0,format="%.2f")
-                            new_aliases=st.text_input("Aliases",value=product.get("aliases") or "")
-                            new_name=st.text_input("Product name",value=product["name"])
-                        save=st.form_submit_button("Save changes",type="primary",use_container_width=True)
-                    if save:
-                        try:
-                            update_product(product["id"],name=new_name,price=new_price,unit=new_unit,stock_quantity=new_stock,minimum_stock=new_min,aliases=new_aliases,business_id=business_id)
-                            log_activity("Product updated",new_name,st.session_state.user["name"],business_id)
-                            st.success("Product updated.")
-                            st.rerun()
-                        except Exception:
-                            st.error("The product could not be updated. Check the values and try again.")
+        st.caption("Prices shown below come directly from your shop database. White/blank price means the price has not been set yet.")
+
+        # Search/filter keeps a large catalog easy to use.
+        search=st.text_input("Search products",placeholder="Search Atta, Surf, Pepsi...",key="catalog_search")
+        q=(search or "").strip().lower()
+        visible=[p for p in products if not q or q in p.get("name","").lower() or q in (p.get("aliases") or "").lower()]
+
+        if not visible:
+            empty_state("No matching products", "Try another product name.")
+
+        for product in visible:
+            price=product.get("price")
+            stock=float(product.get("stock_quantity") or 0)
+            minimum=float(product.get("minimum_stock") or 0)
+            unit=product.get("unit") or "unit"
+            price_text="Price not set" if price is None else f"Rs. {float(price):,.2f}"
+            price_class="catalog-price missing" if price is None else "catalog-price"
+            stock_class="catalog-stock low" if stock <= minimum and minimum > 0 else "catalog-stock"
+
+            st.markdown(
+                f"""<div class='catalog-card'>
+                    <div class='catalog-main'>
+                        <div class='catalog-name'>{product['name']}</div>
+                        <div class='catalog-meta'>{unit} · aliases: {product.get('aliases','') or product['name']}</div>
+                    </div>
+                    <div class='{price_class}'><span>SELLING PRICE</span><strong>{price_text}</strong></div>
+                    <div class='{stock_class}'><span>STOCK</span><strong>{stock:g} {unit}</strong></div>
+                    <div class='catalog-stock'><span>MINIMUM</span><strong>{minimum:g} {unit}</strong></div>
+                </div>""",
+                unsafe_allow_html=True,
+            )
+
+            with st.expander(f"Edit {product['name']}",expanded=(price is None)):
+                with st.form(f"product_edit_{product['id']}"):
+                    e1,e2=st.columns(2)
+                    with e1:
+                        new_price=st.number_input(
+                            "Selling price (Rs.)",
+                            min_value=0.0,
+                            value=float(product["price"]) if product.get("price") is not None else 0.0,
+                            step=1.0,
+                            format="%.2f",
+                            help="Enter the real price used by your shop. Business Brain will use this price in sales.",
+                        )
+                        new_unit=st.text_input("Unit",value=product.get("unit") or "unit",placeholder="kg / pack / piece / liter")
+                        new_stock=st.number_input("Current stock",min_value=0.0,value=float(product.get("stock_quantity") or 0),step=1.0,format="%.2f")
+                    with e2:
+                        new_min=st.number_input("Minimum stock",min_value=0.0,value=float(product.get("minimum_stock") or 0),step=1.0,format="%.2f")
+                        new_aliases=st.text_input("Aliases",value=product.get("aliases") or "",help="Optional names customers may say, e.g. aatta, flour")
+                        new_name=st.text_input("Product name",value=product["name"])
+                    save=st.form_submit_button("Save product",type="primary",use_container_width=True)
+                if save:
+                    try:
+                        update_product(
+                            product["id"],name=new_name,price=new_price,unit=new_unit,
+                            stock_quantity=new_stock,minimum_stock=new_min,aliases=new_aliases,
+                            business_id=business_id
+                        )
+                        log_activity("Product updated",new_name,st.session_state.user["name"],business_id)
+                        st.success(f"{new_name} updated. Price: Rs. {new_price:,.2f}")
+                        st.rerun()
+                    except Exception:
+                        st.error("The product could not be updated. Check the name, price and stock values.")
+
     st.markdown("<div class='section-gap'></div>",unsafe_allow_html=True)
     st.markdown("### Business memory")
     st.caption("Small long-term facts that help Business Brain remember your shop. Prices and stock remain in the database; documents remain in Knowledge/RAG.")
@@ -391,7 +453,8 @@ elif page == "Inventory":
     if save_mem:
         if mk.strip() and mv.strip():
             add_business_memory(mk,mv,business_id=business_id); log_activity("Business memory updated",mk,st.session_state.user["name"],business_id); st.success("Remembered."); st.rerun()
-        else: st.warning("Add both a name and a value.")
+        else:
+            st.warning("Add both a name and a value.")
     memories=list_business_memory(business_id)
     for mem in memories[:10]:
         a,b=st.columns([5,1])
