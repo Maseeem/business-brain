@@ -643,16 +643,29 @@ def seed_operational_data():
         ("Surf", "surf,washing powder", 350.0, 12.0, 5.0, "pack"),
         ("Flour", "flour,atta,aata,آٹا", 180.0, 8.0, 10.0, "kg"),
         ("Sooji", "sooji,suji,semolina,سوجی", 220.0, 15.0, 5.0, "kg"),
+        ("Papad", "papad,papadum,پاپڑ,پاپڑ", None, 0.0, 5.0, "pack"),
+        ("Nimko", "nimko,nimco,نمکو", None, 0.0, 5.0, "pack"),
         ("Sabun", "sabun,soap,صابن", 150.0, 20.0, 5.0, "piece"),
         ("Sugar", "sugar,cheeni,چینی", 170.0, 20.0, 5.0, "kg"),
         ("Rice", "rice,chawal,چاول", 320.0, 18.0, 5.0, "kg"),
-        ("Cooking Oil", "oil,cooking oil,tel", 650.0, 10.0, 3.0, "liter"),
+        ("Cooking Oil", "oil,cooking oil,tel,آئل,آئل,تیل", 650.0, 10.0, 3.0, "liter"),
     ]
     for name, aliases, price, stock, minimum, unit in products:
-        c.execute("""INSERT OR IGNORE INTO products
-            (business_id,name,aliases,price,stock_quantity,minimum_stock,unit,active,created_at,updated_at)
-            VALUES (?,?,?,?,?,?,?,1,?,?)""",
-            (business_id, name, aliases, price, stock, minimum, unit, now, now))
+        existing = c.execute("SELECT id, aliases FROM products WHERE business_id=? AND lower(name)=lower(?)", (business_id, name)).fetchone()
+        if existing:
+            # Add safe built-in aliases without overwriting an owner's custom aliases.
+            current = [x.strip() for x in str(existing[1] or "").split(",") if x.strip()]
+            merged = current[:]
+            for alias in str(aliases or "").split(","):
+                alias = alias.strip()
+                if alias and alias.lower() not in {x.lower() for x in merged}:
+                    merged.append(alias)
+            c.execute("UPDATE products SET aliases=?, updated_at=? WHERE id=? AND business_id=?", (",".join(merged), now, existing[0], business_id))
+        else:
+            c.execute("""INSERT INTO products
+                (business_id,name,aliases,price,stock_quantity,minimum_stock,unit,active,created_at,updated_at)
+                VALUES (?,?,?,?,?,?,?,1,?,?)""",
+                (business_id, name, aliases, price, stock, minimum, unit, now, now))
 
     suppliers = [
         ("ABC Distributor", "0300-0000000"),

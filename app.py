@@ -171,6 +171,7 @@ if "sale_cart" not in st.session_state: st.session_state.sale_cart = []
 if "sale_last_id" not in st.session_state: st.session_state.sale_last_id = None
 if "sale_input_value" not in st.session_state: st.session_state.sale_input_value = ""
 if "sale_missing_price" not in st.session_state: st.session_state.sale_missing_price = []
+if "sale_confirmed_notice" not in st.session_state: st.session_state.sale_confirmed_notice = ""
 
 sidebar(business)
 with st.sidebar:
@@ -244,6 +245,7 @@ elif page == "Smart Sale":
                     with st.spinner("Understanding your voice order…"):
                         transcript = transcribe_audio_to_text(audio)
                         st.session_state.sale_input_value = transcript
+                        st.session_state.sale_input = transcript
                         st.session_state.sale_audio_key = audio_key
                         if transcript.strip():
                             result = build_cart(transcript, business_id)
@@ -251,8 +253,14 @@ elif page == "Smart Sale":
                             st.session_state.sale_cart = result.get("cart", [])
                             st.session_state.sale_route = route_request(transcript)
                             st.session_state.sale_voice_understood = True
+                            if result.get("missing_price"):
+                                st.session_state.sale_voice_notice = "Price not set for: " + ", ".join(result["missing_price"]) + ". Open Shop Catalog and add the real selling price."
+                            else:
+                                st.session_state.sale_voice_notice = ""
             except Exception:
                 st.error("I couldn't understand that recording. Please try again or type the order.")
+        if st.session_state.get("sale_voice_notice"):
+            st.warning(st.session_state.sale_voice_notice)
         if st.session_state.get("sale_input_value"):
             st.markdown(f"<div class='premium-card' style='margin:.55rem 0'><div class='eyebrow'>I understood</div><div style='font-size:1.05rem;font-weight:650;margin-top:.25rem'>{st.session_state.sale_input_value}</div><div class='muted'>The voice order has been converted into your cart. You can edit the text and press Understand Order if you want to change it.</div></div>",unsafe_allow_html=True)
         order = st.text_area("⌨️ Type Order", value=st.session_state.get("sale_input_value", ""), placeholder="1 Pepsi, 2 tissue aur 1 Surf", height=105, key="sale_input")
@@ -283,8 +291,10 @@ elif page == "Smart Sale":
                 st.session_state.sale_cart = []
                 st.session_state.sale_last_id = None
                 st.session_state.sale_input_value = ""
+                st.session_state.sale_input = ""
                 st.session_state.sale_audio_key = None
                 st.session_state.sale_voice_understood = False
+                st.session_state.sale_voice_notice = ""
                 st.rerun()
         if st.session_state.sale_cart:
             st.markdown("### 2 · Review cart")
@@ -315,32 +325,60 @@ elif page == "Smart Sale":
                     from database_tools import save_sale
                     sale_id = save_sale(ref, total, st.session_state.sale_cart, st.session_state.user["id"], business_id)
                     st.session_state.sale_last_id = sale_id
+                    st.session_state.sale_confirmed_notice = f"Sale {ref} confirmed and saved."
                     log_activity("Sale confirmed", f"{ref} · Rs. {total:,.2f}", st.session_state.user["name"], business_id)
-                    st.success(f"Sale {ref} saved successfully.")
+                    st.success(f"Sale {ref} confirmed and saved successfully.")
                 except ValueError as exc:
                     st.error(str(exc))
                 except Exception:
                     st.error("Sale could not be saved. Please try again.")
     with col2:
-        st.markdown("### 3 · Verify receipt")
-        st.caption("Gemini reads the image; Python performs the comparison.")
+        st.markdown("### 3 · Sale receipt")
+        st.caption("Your confirmed order is shown here first. Upload a separate receipt below if you want Business Brain to verify it against this sale.")
         if st.session_state.sale_last_id:
             sale = get_sale(st.session_state.sale_last_id, business_id)
-            receipt = st.file_uploader("Receipt image", type=["png", "jpg", "jpeg", "webp"], key="receipt_upload")
-            if receipt and st.button("Verify Receipt", use_container_width=True):
-                try:
-                    expected = [{"product_id": x["product_id"], "name": x["name"], "quantity": x["quantity"], "unit_price": x["unit_price"]} for x in sale["items"]]
-                    result = verify_receipt(receipt.getvalue(), receipt.type, expected, sale["total"])
-                    from database import save_receipt_verification
-                    save_receipt_verification(sale["id"], result.get("status", "Unclear"), result.get("extracted", {}), result.get("mismatches", []), st.session_state.user["id"], business_id)
-                    if result.get("status") == "Match": st.success("Receipt matches the saved order.")
-                    elif result.get("status") == "Unclear": st.warning("I couldn't read part of the receipt clearly. Please upload a clearer image or verify manually.")
-                    else: st.warning("Possible mismatch detected. Please verify.")
-                    for mismatch in result.get("mismatches", []): st.markdown(f"- {mismatch.get('message', 'Please verify this receipt detail.')}")
-                except Exception:
-                    st.error("Receipt verification could not be completed. Please try a clearer image.")
+            if sale:
+                st.markdown(
+                    f"<div class='receipt-card'><div class='receipt-top'><div><div class='eyebrow'>SALE CONFIRMED</div><div class='receipt-ref'>{sale['transaction_ref']}</div></div><div class='receipt-status'>Confirmed</div></div>"
+                    f"<div class='receipt-meta'>Sale #{sale['id']} · {sale['created_at']}</div></div>",
+                    unsafe_allow_html=True,
+                )
+                for item in sale.get("items", []):
+                    st.markdown(
+                        f"<div class='receipt-line'><div><b>{item['name']}</b><div class='muted'>× {float(item['quantity']):g} · Rs. {float(item['unit_price']):,.2f} each</div></div><b>Rs. {float(item['subtotal']):,.2f}</b></div>",
+                        unsafe_allow_html=True,
+                    )
+                st.markdown(
+                    f"<div class='receipt-total'><span>Total</span><strong>Rs. {float(sale['total']):,.2f}</strong></div>",
+                    unsafe_allow_html=True,
+                )
+                receipt_text = [
+                    "BUSINESS BRAIN — SALE RECEIPT",
+                    f"Sale: {sale['transaction_ref']}",
+                    f"Date: {sale['created_at']}",
+                    "",
+                ]
+                for item in sale.get("items", []):
+                    receipt_text.append(f"{item['name']} × {float(item['quantity']):g} @ Rs. {float(item['unit_price']):,.2f} = Rs. {float(item['subtotal']):,.2f}")
+                receipt_text += ["", f"TOTAL: Rs. {float(sale['total']):,.2f}", "Status: Confirmed"]
+                st.download_button("Download Sale Receipt", "\n".join(receipt_text), file_name=f"{sale['transaction_ref']}.txt", mime="text/plain", use_container_width=True)
+
+                st.markdown("#### Verify an uploaded receipt")
+                receipt = st.file_uploader("Upload receipt image", type=["png", "jpg", "jpeg", "webp"], key="receipt_upload")
+                if receipt and st.button("Verify Receipt", use_container_width=True):
+                    try:
+                        expected = [{"product_id": x["product_id"], "name": x["name"], "quantity": x["quantity"], "unit_price": x["unit_price"]} for x in sale["items"]]
+                        result = verify_receipt(receipt.getvalue(), receipt.type, expected, sale["total"])
+                        from database import save_receipt_verification
+                        save_receipt_verification(sale["id"], result.get("status", "Unclear"), result.get("extracted", {}), result.get("mismatches", []), st.session_state.user["id"], business_id)
+                        if result.get("status") == "Match": st.success("Receipt matches the saved order.")
+                        elif result.get("status") == "Unclear": st.warning("I couldn't read part of the receipt clearly. Please upload a clearer image or verify manually.")
+                        else: st.warning("Possible mismatch detected. Please verify.")
+                        for mismatch in result.get("mismatches", []): st.markdown(f"- {mismatch.get('message', 'Please verify this receipt detail.')}")
+                    except Exception:
+                        st.error("Receipt verification could not be completed. Please try a clearer image.")
         else:
-            st.info("Confirm a sale first, then its receipt can be verified here.")
+            st.markdown("<div class='receipt-empty'><div class='receipt-empty-icon'>🧾</div><b>No confirmed sale yet</b><div class='muted'>Confirm the cart above and your sale receipt will appear here automatically.</div></div>", unsafe_allow_html=True)
 
 # ---------- Inventory / Product Catalog ----------
 elif page == "Inventory":

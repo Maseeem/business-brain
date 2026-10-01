@@ -10,14 +10,20 @@ NUMBER_WORDS = {
     "zero":0,"one":1,"two":2,"three":3,"four":4,"five":5,"six":6,"seven":7,"eight":8,"nine":9,"ten":10,
     "ek":1,"aik":1,"do":2,"du":2,"teen":3,"tin":3,"char":4,"chaar":4,"paanch":5,"panch":5,"che":6,"chay":6,
     "saat":7,"aath":8,"nau":9,"das":10,
+    "ایک":1,"اک":1,"دو":2,"تین":3,"چار":4,"پانچ":5,"چھ":6,"سات":7,"آٹھ":8,"آٹھ":8,"نو":9,"دس":10,
 }
 
+def _normalize_digits(text):
+    table = str.maketrans("۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩", "01234567890123456789")
+    return str(text or "").translate(table)
+
 def _words_to_number(text):
-    t=(text or "").strip().lower()
+    t=_normalize_digits(text).strip().lower()
     if re.fullmatch(r"\d+(?:\.\d+)?",t): return float(t)
     return float(NUMBER_WORDS[t]) if t in NUMBER_WORDS else None
 
 def _norm(s):
+    s = _normalize_digits(s)
     return re.sub(r"[^\w\s-]", " ", str(s or "").lower(), flags=re.UNICODE).strip()
 
 def _product_match(fragment, product):
@@ -40,10 +46,10 @@ def _fallback_extract(text, catalog):
         qty=1.0
         # quantity before product: "2 kg atta", "do kilo sooji"
         patterns=[
-            rf"(\d+(?:\.\d+)?)\s*(?:kg|kilo|kilos|liter|litre|ltr|pcs|piece|pieces|pack|packs)?\s*{re.escape(matched)}",
-            rf"\b(one|two|three|four|five|six|seven|eight|nine|ten|ek|aik|do|du|teen|tin|char|chaar|paanch|panch|che|chay|saat|aath|nau|das)\s*(?:kg|kilo|kilos|liter|litre|ltr|pcs|piece|pieces|pack|packs)?\s*{re.escape(matched)}",
+            rf"(\d+(?:\.\d+)?)\s*(?:kg|kilo|kilos|kilogram|kilograms|کلو|کلوگرام|liter|litre|ltr|لیٹر|لٹر|pcs|piece|pieces|pack|packs|پیک|پیکٹ)?\s*{re.escape(matched)}",
+            rf"\b(one|two|three|four|five|six|seven|eight|nine|ten|ek|aik|do|du|teen|tin|char|chaar|paanch|panch|che|chay|saat|aath|nau|das|ایک|اک|دو|تین|چار|پانچ|چھ|سات|آٹھ|آٹھ|نو|دس)\s*(?:kg|kilo|kilos|kilogram|kilograms|کلو|کلوگرام|liter|litre|ltr|لیٹر|لٹر|pcs|piece|pieces|pack|packs|پیک|پیکٹ)?\s*{re.escape(matched)}",
             rf"{re.escape(matched)}\s*(?:x|×)?\s*(\d+(?:\.\d+)?)",
-            rf"{re.escape(matched)}\s*(?:x|×)?\s*(one|two|three|four|five|six|seven|eight|nine|ten|ek|aik|do|du|teen|tin|char|chaar|paanch|panch|che|chay|saat|aath|nau|das)",
+            rf"{re.escape(matched)}\s*(?:x|×)?\s*(one|two|three|four|five|six|seven|eight|nine|ten|ek|aik|do|du|teen|tin|char|chaar|paanch|panch|che|chay|saat|aath|nau|das|ایک|اک|دو|تین|چار|پانچ|چھ|سات|آٹھ|آٹھ|نو|دس)",
         ]
         for pat in patterns:
             m=re.search(pat,q)
