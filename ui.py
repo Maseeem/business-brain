@@ -77,6 +77,50 @@ def inject_css():
     [data-testid="stSidebar"] .stButton>button[kind="primary"]{background:#198754!important;color:#ffffff!important}
     .stTextInput input::placeholder,.stTextArea textarea::placeholder,.stNumberInput input::placeholder{color:#8a9891!important;opacity:1!important}
     .stTextInput input:disabled,.stTextArea textarea:disabled,.stNumberInput input:disabled{background:#f5f8f6!important;color:#6b7b72!important}
+
+    /* Final readability override: no black button surfaces and always-contrasting button text. */
+    .stButton > button,
+    .stButton > button[kind="secondary"],
+    .stButton > button[kind="tertiary"],
+    .stButton > button[kind="primary"],
+    button[data-testid="baseButton-secondary"],
+    button[data-testid="baseButton-primary"],
+    button[data-testid="baseButton-tertiary"]{
+        background:#ffffff!important;
+        color:#253247!important;
+        border:1px solid #cfe0d7!important;
+        text-shadow:none!important;
+        box-shadow:0 2px 8px rgba(42,66,100,.05)!important;
+    }
+    .stButton > button:hover,
+    button[data-testid="baseButton-secondary"]:hover,
+    button[data-testid="baseButton-tertiary"]:hover{
+        background:#eef8f2!important;
+        color:#155c3b!important;
+        border-color:#a9d5ba!important;
+    }
+    .stButton > button[kind="primary"],
+    button[data-testid="baseButton-primary"]{
+        background:#198754!important;
+        color:#ffffff!important;
+        border:1px solid #198754!important;
+    }
+    .stButton > button[kind="primary"]:hover,
+    button[data-testid="baseButton-primary"]:hover{
+        background:#157347!important;
+        color:#ffffff!important;
+    }
+    .stButton > button:disabled{
+        background:#f1f5f3!important;
+        color:#7a8a82!important;
+        border-color:#dce5df!important;
+        opacity:1!important;
+    }
+    /* Catch dark native button descendants/icons too. */
+    .stButton > button *,
+    button[data-testid^="baseButton-"] *{
+        color:inherit!important;
+    }
     </style>
     """,unsafe_allow_html=True)
 
