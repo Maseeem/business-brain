@@ -425,51 +425,102 @@ elif page == "Ask Brain":
                     route_result = route_request(question, business_id)
                     route = route_result.get("route", "unknown") if isinstance(route_result, dict) else str(route_result)
 
+                    # Operations Agent: live database answer for inventory/stock questions.
                     if route == "operations":
                         op = classify_operation_request(question)
                         intent = op.get("intent", "inventory") if isinstance(op, dict) else "inventory"
+
                         if intent == "inventory":
                             products = list_products(business_id)
-                            words = re.sub(r"[^a-z0-9\s\u0600-\u06ff]", " ", question.lower()).split()
+                            q_norm = re.sub(r"[^a-z0-9\\s\\u0600-\\u06ff]", " ", question.lower())
+                            q_tokens = [x for x in q_norm.split() if len(x) > 1]
+
                             best = None
                             best_score = 0
                             for product in products:
-                                hay = " ".join([str(product.get("name","")), str(product.get("aliases","")), str(product.get("sku",""))]).lower()
-                                score = sum(1 for word in words if len(word) > 1 and word in hay)
+                                hay = " ".join([
+                                    str(product.get("name", "")),
+                                    str(product.get("aliases", "")),
+                                    str(product.get("sku", "")),
+                                ]).lower()
+                                score = sum(1 for token in q_tokens if token in hay)
                                 if score > best_score:
                                     best_score = score
                                     best = product
+
                             if best:
-                                stock = float(best.get("stock_quantity", 0) or 0)
-                                minimum = float(best.get("minimum_stock", 0) or 0)
+                                stock = best.get("stock_quantity", 0)
                                 unit = best.get("unit", "unit")
-                                answer = f"**{best['name']}** ka current stock **{stock:g} {unit}** hai. Minimum stock level **{minimum:g} {unit}** hai."
-                                if stock <= minimum:
+                                minimum = best.get("minimum_stock", 0)
+                                answer = (
+                                    f"**{best['name']}** ka current stock **{stock:g} {unit}** hai. "
+                                    f"Minimum stock level **{minimum:g} {unit}** hai."
+                                )
+                                if float(stock) <= float(minimum):
                                     answer += " ⚠️ Ye product low-stock level par hai."
                                 result = {"ok": True, "answer": answer, "sources": []}
                             else:
-                                result = {"ok": True, "answer": "Mujhe is product ka naam catalog mein match nahi mila. Please exact product name batayein.", "sources": []}
+                                result = {
+                                    "ok": True,
+                                    "answer": "Mujhe is product ka naam catalog mein match nahi mila. Please exact product name batayein.",
+                                    "sources": [],
+                                }
                         else:
-                            result = {"ok": True, "answer": "Operations Agent ne supplier/reorder request identify ki hai. Product aur required quantity batayein.", "sources": []}
+                            result = {
+                                "ok": True,
+                                "answer": "Operations Agent ne request ko supplier/reorder workflow ke liye identify kiya hai. Supplier order banane ke liye product ka naam aur required quantity batayein.",
+                                "sources": [],
+                            }
+
+                    # Sale requests from Ask Brain are handed to the Smart Sale workflow.
                     elif route == "sale":
-                        result = {"ok": True, "answer": "Ye sale request hai. **Smart Sale** page par isi order ko type ya speak karein; wahan Smart Sale Agent cart, saved price aur stock handle karega.", "sources": []}
+                        result = {
+                            "ok": True,
+                            "answer": "Ye sale request hai. **Smart Sale** page par isi order ko type/speak karein; wahan Smart Sale Agent catalog, price, stock aur cart ko handle karega.",
+                            "sources": [],
+                        }
+
+                    # Receipt requests belong to the Receipt Agent workflow.
                     elif route == "receipt":
-                        result = {"ok": True, "answer": "Ye receipt-verification request hai. **Smart Sale → Receipt Verification** mein receipt upload karein.", "sources": []}
+                        result = {
+                            "ok": True,
+                            "answer": "Ye receipt-verification request hai. **Smart Sale → Receipt Verification** workflow mein receipt upload karein; Receipt Agent saved order ke against receipt ko verify karega.",
+                            "sources": [],
+                        }
+
+                    # Knowledge requests continue through the existing RAG/Knowledge Agent.
                     else:
-                        result = answer_business_question(question, conversation=st.session_state.chat)
+                        with st.spinner("Knowledge Agent is searching your Business Brain…"):
+                            result = answer_business_question(
+                                question,
+                                conversation=st.session_state.chat
+                            )
 
                     if result["ok"]:
                         st.markdown(result["answer"])
                         if result["sources"]:
                             st.markdown("**Sources**")
-                            for source in result["sources"]: source_card(source)
-                        st.session_state.chat.append({"role":"assistant","content":result["answer"],"sources":result["sources"]})
+                            for source in result["sources"]:
+                                source_card(source)
+                        st.session_state.chat.append({
+                            "role": "assistant",
+                            "content": result["answer"],
+                            "sources": result["sources"]
+                        })
                     else:
                         st.error(result["error"])
-                        st.session_state.chat.append({"role":"assistant","content":result["error"],"sources":[]})
+                        st.session_state.chat.append({
+                            "role": "assistant",
+                            "content": result["error"],
+                            "sources": []
+                        })
                 except Exception:
                     st.error("I couldn't process that request right now. Please try again.")
-                    st.session_state.chat.append({"role":"assistant","content":"I couldn't process that request right now. Please try again.","sources":[]})
+                    st.session_state.chat.append({
+                        "role": "assistant",
+                        "content": "I couldn't process that request right now. Please try again.",
+                        "sources": []
+                    })
 
 # ---------- Smart Sale ----------
 elif page == "Smart Sale":
