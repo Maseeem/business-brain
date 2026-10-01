@@ -13,7 +13,7 @@ from database import (
 from agent import generate_sop_from_inputs, answer_business_question, transcribe_audio_to_text
 from coordinator_agent import route_request
 from smart_sale_agent import build_cart
-from operations_agent import low_stock_items, supplier_draft, classify_operation_request
+from operations_agent import low_stock_items, supplier_draft
 from receipt_agent import verify_receipt
 from rag import ingest_knowledge_file, edit_knowledge_item, remove_knowledge_item, detect_knowledge_contradictions, index_process, bootstrap_index
 from ui import inject_css, sidebar, page_header, stat_card, empty_state, source_card
@@ -192,38 +192,218 @@ page = st.session_state.page
 
 # ---------- Dashboard ----------
 if page == "Dashboard":
-    page_header("Good morning 👋", "Your business knowledge, organized and ready to work.", "Dashboard")
-    processes=list_processes(); knowledge=list_knowledge(); activity=get_activity(6)
-    cols=st.columns(4)
-    stats=[("Processes",len(processes),"Documented workflows"),("Knowledge items",len(knowledge),"Sources in your Brain"),("Indexed",sum(1 for x in knowledge if x["status"]=="Indexed"),"Ready for retrieval"),("Activity",len(get_activity(1000)),"Workspace events")]
-    for col,(label,value,sub) in zip(cols,stats):
-        with col: stat_card(label,value,sub)
-    st.markdown("<div class='section-gap'></div>",unsafe_allow_html=True)
-    left,right=st.columns([1.65,1],gap="large")
-    with left:
-        st.markdown("### Quick actions")
-        qcols=st.columns(3)
-        actions=[("＋","Record Process","Turn how your team works into an SOP.","Record Process",can("record")),("✦","Add Knowledge","Teach Business Brain something new.","Knowledge",can("knowledge")),("⌕","Ask Brain","Get an evidence-backed answer.","Ask Brain",True)]
-        for c,(icon,title,desc,target,allowed) in zip(qcols,actions):
+    page_header(
+        "Good morning 👋",
+        "Your business at a glance. Focus on what needs attention.",
+        "Dashboard",
+    )
+
+    # Use the existing operational reporting helper so dashboard values
+    # come from the real Business Brain database.
+    try:
+        ops = get_daily_operations(current_business_id())
+    except Exception:
+        ops = {
+            "low_stock": [],
+            "sales_count": 0,
+            "sales_total": 0,
+            "pending_supplier_orders": 0,
+            "recent_sales": [],
+        }
+
+    try:
+        products = list_products(current_business_id())
+    except Exception:
+        products = []
+
+    low_stock = ops.get("low_stock") or []
+
+    missing_price = []
+    for product in products:
+        price = product.get("price")
+        try:
+            is_missing = price is None or float(price or 0) <= 0
+        except Exception:
+            is_missing = True
+        if is_missing:
+            missing_price.append(product)
+
+    pending_receipts = 0
+    try:
+        conn = sqlite3.connect("business_brain.db")
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            "SELECT COUNT(*) AS n FROM receipt_verifications "
+            "WHERE business_id=? AND status IN ('Pending','Review')",
+            (current_business_id(),),
+        ).fetchone()
+        pending_receipts = int(row["n"] or 0) if row else 0
+        conn.close()
+    except Exception:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+    pending_supplier = int(ops.get("pending_supplier_orders") or 0)
+    need_attention = len(low_stock) + len(missing_price) + pending_receipts + pending_supplier
+
+    # ---- 4 simple numbers ----
+    c1, c2, c3, c4 = st.columns(4)
+
+    with c1:
+        st.markdown(
+            f"<div class='metric-card'><div class='metric-label'>Today's Sales</div>"
+            f"<div class='metric-value'>Rs {float(ops.get('sales_total') or 0):,.0f}</div></div>",
+            unsafe_allow_html=True,
+        )
+
+    with c2:
+        st.markdown(
+            f"<div class='metric-card'><div class='metric-label'>Today's Orders</div>"
+            f"<div class='metric-value'>{int(ops.get('sales_count') or 0)}</div></div>",
+            unsafe_allow_html=True,
+        )
+
+    with c3:
+        st.markdown(
+            f"<div class='metric-card'><div class='metric-label'>Low Stock</div>"
+            f"<div class='metric-value'>{len(low_stock)}</div></div>",
+            unsafe_allow_html=True,
+        )
+
+    with c4:
+        st.markdown(
+            f"<div class='metric-card'><div class='metric-label'>Need Attention</div>"
+            f"<div class='metric-value'>{need_attention}</div></div>",
+            unsafe_allow_html=True,
+        )
+
+    st.markdown("<div class='section-gap'></div>", unsafe_allow_html=True)
+
+    # ---- Need Attention ----
+    st.markdown("### Need Attention")
+
+    if need_attention == 0:
+        st.success(
+            "Everything looks good. No inventory, pricing, receipt, or supplier actions need attention."
+        )
+    else:
+        attention = []
+
+        for item in low_stock:
+            stock = float(item.get("stock_quantity") or 0)
+            minimum = float(item.get("minimum_stock") or 0)
+            label = "Out of stock" if stock <= 0 else "Low stock"
+            attention.append(
+                ("inventory", label, item.get("name", "Unknown product"),
+                 f"Stock {stock:g} · Minimum {minimum:g}")
+            )
+
+        for product in missing_price:
+            attention.append(
+                ("price", "Price missing", product.get("name", "Unknown product"),
+                 "Add a selling price before taking a sale.")
+            )
+
+        if pending_receipts:
+            attention.append(
+                ("receipt", "Receipt verification pending",
+                 f"{pending_receipts} receipt verification(s) waiting for review.",
+                 "Open Smart Sale to review receipts.")
+            )
+
+        if pending_supplier:
+            attention.append(
+                ("supplier", "Supplier approval pending",
+                 f"{pending_supplier} supplier order(s) need approval.",
+                 "Review supplier orders before sending them.")
+            )
+
+        for index, (kind, label, name, detail) in enumerate(attention[:12]):
+            a, b, c = st.columns([1.5, 3.5, 1.25])
+
+            with a:
+                if label == "Out of stock":
+                    st.error(label)
+                elif label == "Low stock":
+                    st.warning(label)
+                else:
+                    st.info(label)
+
+            with b:
+                st.markdown(
+                    f"<div class='attention-name'>{name}</div>"
+                    f"<div class='attention-detail'>{detail}</div>",
+                    unsafe_allow_html=True,
+                )
+
             with c:
-                st.markdown(f"<div class='action-card'><div class='action-icon'>{icon}</div><div class='action-title'>{title}</div><div class='action-desc'>{desc}</div></div>",unsafe_allow_html=True)
-                if allowed:
-                    if st.button(f"Open {title}",key=f"qa_{target}",use_container_width=True): st.session_state.page=target; st.rerun()
-                else: st.caption("Manager or Owner access")
-        st.markdown("<div class='section-gap'></div>",unsafe_allow_html=True)
-        st.markdown("### Recent processes")
-        if not processes: empty_state("No processes yet","Record your first workflow to start teaching your Business Brain.")
-        for p in processes[:5]:
-            c1,c2,c3=st.columns([4,1.5,1])
-            with c1: st.markdown(f"**{p['name']}**"); st.caption(p["description"] or "Structured business workflow")
-            with c2: st.caption(p["category"])
-            with c3:
-                if st.button("Open",key=f"open_p_{p['id']}"): st.session_state.selected_process=p["id"]; st.session_state.page="Process detail"; st.rerun()
-    with right:
-        st.markdown("### Recent activity")
-        if not activity: empty_state("Nothing here yet","Your workspace activity will appear here.")
-        for item in activity:
-            st.markdown(f"<div class='activity-row'><div class='activity-dot'></div><div><b>{item['action']}</b><div class='muted'>{item['details']}</div><div class='tiny'>{item['created_at']}</div></div></div>",unsafe_allow_html=True)
+                if kind == "inventory":
+                    if st.button(
+                        "Restock",
+                        key=f"dashboard_restock_{index}",
+                        use_container_width=True,
+                    ):
+                        st.session_state.page = "Inventory"
+                        st.rerun()
+                elif kind == "price":
+                    if st.button(
+                        "Edit Price",
+                        key=f"dashboard_price_{index}",
+                        use_container_width=True,
+                    ):
+                        st.session_state.page = "Smart Sale"
+                        st.rerun()
+                elif kind == "receipt":
+                    if st.button(
+                        "Review",
+                        key=f"dashboard_receipt_review_{index}",
+                        use_container_width=True,
+                    ):
+                        st.session_state.page = "Smart Sale"
+                        st.session_state["open_receipt_check"] = True
+                        st.rerun()
+                elif kind == "supplier":
+                    if st.button(
+                        "Approve",
+                        key=f"dashboard_supplier_approve_{index}",
+                        use_container_width=True,
+                    ):
+                        st.session_state.page = "Daily Operations"
+                        st.rerun()
+
+    st.markdown("<div class='section-gap'></div>", unsafe_allow_html=True)
+
+    # ---- Quick Actions ----
+    st.markdown("### Quick Actions")
+    q1, q2, q3, q4 = st.columns(4)
+
+    with q1:
+        if st.button("＋  New Sale", key="dashboard_new_sale", use_container_width=True):
+            st.session_state.page = "Smart Sale"
+            st.rerun()
+
+    with q2:
+        if st.button("📦  Inventory", key="dashboard_inventory", use_container_width=True):
+            st.session_state.page = "Inventory"
+            st.rerun()
+
+    with q3:
+        if st.button(
+            "🧾  Check Receipt",
+            key="dashboard_check_receipt",
+            use_container_width=True,
+        ):
+            st.session_state.page = "Smart Sale"
+            st.session_state["open_receipt_check"] = True
+            st.rerun()
+
+    with q4:
+        if st.button("⌕  Ask Brain", key="dashboard_ask_brain", use_container_width=True):
+            st.session_state.page = "Ask Brain"
+            st.rerun()
+
 
 # ---------- Record Process ----------
 elif page == "Record Process":
@@ -419,108 +599,14 @@ elif page == "Ask Brain":
         st.session_state.chat.append({"role":"user","content":question})
         with st.chat_message("user"): st.markdown(question)
         with st.chat_message("assistant"):
-            with st.spinner("Business Brain is routing your request…"):
-                try:
-                    business_id = current_business_id()
-                    route_result = route_request(question, business_id)
-                    route = route_result.get("route", "unknown") if isinstance(route_result, dict) else str(route_result)
-
-                    # Operations Agent: live database answer for inventory/stock questions.
-                    if route == "operations":
-                        op = classify_operation_request(question)
-                        intent = op.get("intent", "inventory") if isinstance(op, dict) else "inventory"
-
-                        if intent == "inventory":
-                            products = list_products(business_id)
-                            q_norm = re.sub(r"[^a-z0-9\\s\\u0600-\\u06ff]", " ", question.lower())
-                            q_tokens = [x for x in q_norm.split() if len(x) > 1]
-
-                            best = None
-                            best_score = 0
-                            for product in products:
-                                hay = " ".join([
-                                    str(product.get("name", "")),
-                                    str(product.get("aliases", "")),
-                                    str(product.get("sku", "")),
-                                ]).lower()
-                                score = sum(1 for token in q_tokens if token in hay)
-                                if score > best_score:
-                                    best_score = score
-                                    best = product
-
-                            if best:
-                                stock = best.get("stock_quantity", 0)
-                                unit = best.get("unit", "unit")
-                                minimum = best.get("minimum_stock", 0)
-                                answer = (
-                                    f"**{best['name']}** ka current stock **{stock:g} {unit}** hai. "
-                                    f"Minimum stock level **{minimum:g} {unit}** hai."
-                                )
-                                if float(stock) <= float(minimum):
-                                    answer += " ⚠️ Ye product low-stock level par hai."
-                                result = {"ok": True, "answer": answer, "sources": []}
-                            else:
-                                result = {
-                                    "ok": True,
-                                    "answer": "Mujhe is product ka naam catalog mein match nahi mila. Please exact product name batayein.",
-                                    "sources": [],
-                                }
-                        else:
-                            result = {
-                                "ok": True,
-                                "answer": "Operations Agent ne request ko supplier/reorder workflow ke liye identify kiya hai. Supplier order banane ke liye product ka naam aur required quantity batayein.",
-                                "sources": [],
-                            }
-
-                    # Sale requests from Ask Brain are handed to the Smart Sale workflow.
-                    elif route == "sale":
-                        result = {
-                            "ok": True,
-                            "answer": "Ye sale request hai. **Smart Sale** page par isi order ko type/speak karein; wahan Smart Sale Agent catalog, price, stock aur cart ko handle karega.",
-                            "sources": [],
-                        }
-
-                    # Receipt requests belong to the Receipt Agent workflow.
-                    elif route == "receipt":
-                        result = {
-                            "ok": True,
-                            "answer": "Ye receipt-verification request hai. **Smart Sale → Receipt Verification** workflow mein receipt upload karein; Receipt Agent saved order ke against receipt ko verify karega.",
-                            "sources": [],
-                        }
-
-                    # Knowledge requests continue through the existing RAG/Knowledge Agent.
-                    else:
-                        with st.spinner("Knowledge Agent is searching your Business Brain…"):
-                            result = answer_business_question(
-                                question,
-                                conversation=st.session_state.chat
-                            )
-
-                    if result["ok"]:
-                        st.markdown(result["answer"])
-                        if result["sources"]:
-                            st.markdown("**Sources**")
-                            for source in result["sources"]:
-                                source_card(source)
-                        st.session_state.chat.append({
-                            "role": "assistant",
-                            "content": result["answer"],
-                            "sources": result["sources"]
-                        })
-                    else:
-                        st.error(result["error"])
-                        st.session_state.chat.append({
-                            "role": "assistant",
-                            "content": result["error"],
-                            "sources": []
-                        })
-                except Exception:
-                    st.error("I couldn't process that request right now. Please try again.")
-                    st.session_state.chat.append({
-                        "role": "assistant",
-                        "content": "I couldn't process that request right now. Please try again.",
-                        "sources": []
-                    })
+            with st.spinner("Searching your Business Brain…"): result=answer_business_question(question, conversation=st.session_state.chat)
+            if result["ok"]:
+                st.markdown(result["answer"])
+                if result["sources"]:
+                    st.markdown("**Sources**")
+                    for source in result["sources"]: source_card(source)
+                st.session_state.chat.append({"role":"assistant","content":result["answer"],"sources":result["sources"]})
+            else: st.error(result["error"]); st.session_state.chat.append({"role":"assistant","content":result["error"],"sources":[]})
 
 # ---------- Smart Sale ----------
 elif page == "Smart Sale":
