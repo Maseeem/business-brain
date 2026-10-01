@@ -233,6 +233,46 @@ def inject_css():
         color:#253247!important;
     }
 
+    /* ASK BRAIN / CHAT: force the chat composer and messages into the light theme. */
+    [data-testid="stChatInput"],
+    [data-testid="stChatInput"] > div,
+    [data-testid="stChatInput"] form,
+    [data-testid="stChatInput"] [data-baseweb="textarea"],
+    [data-testid="stChatInput"] [data-baseweb="textarea"] > div,
+    [data-testid="stChatInput"] textarea{
+        background:#ffffff!important;
+        color:#253247!important;
+        border-color:#cfe0d7!important;
+    }
+    [data-testid="stChatInput"] textarea::placeholder{
+        color:#7a8a82!important;
+        opacity:1!important;
+    }
+    [data-testid="stChatInput"] button,
+    [data-testid="stChatInput"] button svg{
+        background:#198754!important;
+        color:#ffffff!important;
+        fill:#ffffff!important;
+        border-color:#198754!important;
+    }
+    [data-testid="stChatMessage"],
+    [data-testid="stChatMessageContent"],
+    [data-testid="stChatMessageContent"] > div{
+        color:#253247!important;
+    }
+    [data-testid="stChatMessage"] [data-testid="stMarkdownContainer"],
+    [data-testid="stChatMessage"] [data-testid="stMarkdownContainer"] p,
+    [data-testid="stChatMessage"] [data-testid="stMarkdownContainer"] li{
+        color:#253247!important;
+    }
+    /* Any BaseWeb textarea/input used by Ask Brain must stay white even before hover/focus. */
+    [data-baseweb="textarea"] > div,
+    [data-baseweb="textarea"] textarea,
+    textarea{
+        background:#ffffff!important;
+        color:#253247!important;
+    }
+
     /* Text must remain readable everywhere. */
     [data-testid="stAppViewContainer"] p,
     [data-testid="stAppViewContainer"] span,
