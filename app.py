@@ -178,6 +178,18 @@ if "sale_last_id" not in st.session_state: st.session_state.sale_last_id = None
 if "sale_missing_price" not in st.session_state: st.session_state.sale_missing_price = []
 if "sale_unknown_items" not in st.session_state: st.session_state.sale_unknown_items = []
 
+def reset_sale_workflow(clear_last_sale=True):
+    """Reset only active Smart Sale state; leave unrelated session state intact."""
+    st.session_state.sale_cart = []
+    st.session_state.sale_input_value = ""
+    st.session_state.sale_input = ""
+    st.session_state.sale_missing_price = []
+    st.session_state.sale_unknown_items = []
+    st.session_state.sale_route = None
+    if clear_last_sale:
+        st.session_state.sale_last_id = None
+
+
 sidebar(business)
 with st.sidebar:
     st.markdown(f"**{st.session_state.user['name']}**")
@@ -194,38 +206,92 @@ page = st.session_state.page
 
 # ---------- Dashboard ----------
 if page == "Dashboard":
+    business_id = current_business_id()
     page_header("Good morning 👋", "Your business knowledge, organized and ready to work.", "Dashboard")
-    processes=list_processes(); knowledge=list_knowledge(); activity=get_activity(6)
-    cols=st.columns(4)
-    stats=[("Processes",len(processes),"Documented workflows"),("Knowledge items",len(knowledge),"Sources in your Brain"),("Indexed",sum(1 for x in knowledge if x["status"]=="Indexed"),"Ready for retrieval"),("Activity",len(get_activity(1000)),"Workspace events")]
-    for col,(label,value,sub) in zip(cols,stats):
-        with col: stat_card(label,value,sub)
-    st.markdown("<div class='section-gap'></div>",unsafe_allow_html=True)
-    left,right=st.columns([1.65,1],gap="large")
+
+    # Dashboard data is live and business-scoped. Keep the existing visual
+    # components; only the Dashboard content is intentionally restored here.
+    daily = get_daily_operations(business_id)
+    products = list_products(business_id)
+
+    today_sales = float(daily.get("sales_total", 0) or 0)
+    today_orders = int(daily.get("sales_count", 0) or 0)
+    low_stock = list(daily.get("low_stock", []) or [])
+    low_stock_count = len(low_stock)
+
+    missing_price = [p for p in products if p.get("active", 1) and p.get("price") is None]
+    out_of_stock = [p for p in products if p.get("active", 1) and float(p.get("stock_quantity", 0) or 0) <= 0]
+
+    pending_receipts = 0
+    try:
+        with sqlite3.connect("business_brain.db") as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) FROM receipt_verifications WHERE business_id=? AND status IN ('Needs Review','Possible mismatch','Unclear')",
+                (business_id,),
+            ).fetchone()
+            pending_receipts = int(row[0] or 0)
+    except Exception:
+        pending_receipts = 0
+
+    pending_supplier_orders = int(daily.get("pending_supplier_orders", 0) or 0)
+    attention_count = len(out_of_stock) + len([p for p in low_stock if p not in out_of_stock]) + len(missing_price) + pending_receipts + pending_supplier_orders
+
+    cols = st.columns(4)
+    stats = [
+        ("Today's Sales", f"Rs. {today_sales:,.2f}", "Confirmed sales today"),
+        ("Today's Orders", today_orders, "Confirmed orders today"),
+        ("Low Stock", low_stock_count, "Products at or below minimum"),
+        ("Need Attention", attention_count, "Items needing review"),
+    ]
+    for col, (label, value, sub) in zip(cols, stats):
+        with col:
+            stat_card(label, value, sub)
+
+    st.markdown("<div class='section-gap'></div>", unsafe_allow_html=True)
+    left, right = st.columns([1.55, 1], gap="large")
+
     with left:
-        st.markdown("### Quick actions")
-        qcols=st.columns(3)
-        actions=[("＋","Record Process","Turn how your team works into an SOP.","Record Process",can("record")),("✦","Add Knowledge","Teach Business Brain something new.","Knowledge",can("knowledge")),("⌕","Ask Brain","Get an evidence-backed answer.","Ask Brain",True)]
-        for c,(icon,title,desc,target,allowed) in zip(qcols,actions):
-            with c:
-                st.markdown(f"<div class='action-card'><div class='action-icon'>{icon}</div><div class='action-title'>{title}</div><div class='action-desc'>{desc}</div></div>",unsafe_allow_html=True)
-                if allowed:
-                    if st.button(f"Open {title}",key=f"qa_{target}",use_container_width=True): st.session_state.page=target; st.rerun()
-                else: st.caption("Manager or Owner access")
-        st.markdown("<div class='section-gap'></div>",unsafe_allow_html=True)
-        st.markdown("### Recent processes")
-        if not processes: empty_state("No processes yet","Record your first workflow to start teaching your Business Brain.")
-        for p in processes[:5]:
-            c1,c2,c3=st.columns([4,1.5,1])
-            with c1: st.markdown(f"**{p['name']}**"); st.caption(p["description"] or "Structured business workflow")
-            with c2: st.caption(p["category"])
-            with c3:
-                if st.button("Open",key=f"open_p_{p['id']}"): st.session_state.selected_process=p["id"]; st.session_state.page="Process detail"; st.rerun()
+        st.markdown("### Need Attention")
+        attention_items = []
+        for product in out_of_stock:
+            attention_items.append(("Out of stock", f"{product['name']} is out of stock.", "Inventory", f"attention_inventory_{product['id']}"))
+        for product in low_stock:
+            if product in out_of_stock:
+                continue
+            attention_items.append(("Low stock", f"{product['name']} · {float(product.get('stock_quantity', 0) or 0):g} {product.get('unit') or 'unit'} remaining.", "Inventory", f"attention_low_{product['id']}"))
+        for product in missing_price:
+            attention_items.append(("Missing price", f"{product['name']} has no selling price.", "Inventory", f"attention_price_{product['id']}"))
+        if pending_receipts:
+            attention_items.append(("Receipt verification pending", f"{pending_receipts} receipt verification(s) need review.", "Receipts", "attention_receipts"))
+        if pending_supplier_orders:
+            attention_items.append(("Supplier approval pending", f"{pending_supplier_orders} supplier order(s) need human approval.", "Suppliers", "attention_suppliers"))
+
+        if not attention_items:
+            empty_state("Nothing needs attention", "Your current business data has no outstanding dashboard actions.")
+        else:
+            for kind, detail, target, key in attention_items:
+                c1, c2 = st.columns([4, 1.25])
+                with c1:
+                    st.markdown(f"**{kind}**")
+                    st.caption(detail)
+                with c2:
+                    if st.button("Review", key=key, use_container_width=True):
+                        st.session_state.page = target
+                        st.rerun()
+
     with right:
-        st.markdown("### Recent activity")
-        if not activity: empty_state("Nothing here yet","Your workspace activity will appear here.")
-        for item in activity:
-            st.markdown(f"<div class='activity-row'><div class='activity-dot'></div><div><b>{item['action']}</b><div class='muted'>{item['details']}</div><div class='tiny'>{item['created_at']}</div></div></div>",unsafe_allow_html=True)
+        st.markdown("### Quick Actions")
+        quick_actions = [
+            ("＋", "New Sale", "Start a new Smart Sale order.", "Smart Sale", True, "dashboard_new_sale"),
+            ("▦", "Inventory", "Review stock and product prices.", "Inventory", True, "dashboard_inventory"),
+            ("🧾", "Check Receipt", "Review receipt verification.", "Receipts", True, "dashboard_receipt"),
+            ("✦", "Ask Brain", "Ask an evidence-backed business question.", "Ask Brain", True, "dashboard_brain"),
+        ]
+        for icon, title, desc, target, allowed, key in quick_actions:
+            st.markdown(f"<div class='action-card'><div class='action-icon'>{icon}</div><div class='action-title'>{title}</div><div class='action-desc'>{desc}</div></div>", unsafe_allow_html=True)
+            if allowed and st.button(f"Open {title}", key=key, use_container_width=True):
+                st.session_state.page = target
+                st.rerun()
 
 # ---------- Record Process ----------
 elif page == "Record Process":
@@ -515,6 +581,10 @@ elif page == "Smart Sale":
         with c1:
             if st.button("Understand Order", type="primary", use_container_width=True) and order.strip():
                 try:
+                    # A new captured request always replaces the active sale.
+                    # This prevents a previous cart/unknown item from leaking into
+                    # the next order when routing or parsing fails.
+                    reset_sale_workflow(clear_last_sale=True)
                     route = route_request(order, business_id)
                     if route["route"] != "sale":
                         st.warning(f"This request looks like a {route['route']} request. Please use the matching workflow.")
@@ -524,19 +594,18 @@ elif page == "Smart Sale":
                         st.session_state.sale_unknown_items = result.get("unknown_items", [])
                         st.session_state.sale_cart = result.get("cart", [])
                         st.session_state.sale_route = route
-                        if not st.session_state.sale_cart:
+                        st.session_state.sale_input_value = order
+                        st.session_state.sale_input = order
+                        if not st.session_state.sale_cart and not st.session_state.sale_unknown_items:
                             st.warning("I couldn't match any product in your shop catalog. Add the product in Shop Catalog or try again.")
                         else:
                             st.success("Order understood. Every matched item is shown below with its saved price and stock.")
                 except Exception:
+                    reset_sale_workflow(clear_last_sale=True)
                     st.error("I couldn't build the order. Please check the product names and quantities.")
         with c2:
             if st.button("Clear Cart", use_container_width=True):
-                st.session_state.sale_cart = []
-                st.session_state.sale_last_id = None
-                st.session_state.sale_input_value = ""
-                st.session_state.sale_missing_price = []
-                st.session_state.sale_unknown_items = []
+                reset_sale_workflow(clear_last_sale=True)
                 st.rerun()
 
         unknown_items = st.session_state.get("sale_unknown_items", []) or []
@@ -631,6 +700,7 @@ elif page == "Smart Sale":
                     from database_tools import save_sale
                     sale_id=save_sale(ref,total,st.session_state.sale_cart,st.session_state.user["id"],business_id)
                     st.session_state.sale_last_id=sale_id
+                    reset_sale_workflow(clear_last_sale=False)
                     log_activity("Sale confirmed", f"{ref} · Rs. {total:,.2f}", st.session_state.user["name"], business_id)
                     st.success(f"Sale {ref} saved successfully.")
                     st.rerun()

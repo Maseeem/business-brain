@@ -1,6 +1,7 @@
 """Knowledge Agent: specialized layer over the existing Business Brain RAG."""
 from agent import _generate
 from rag import retrieve, format_context, contradictions_for_results
+from database import get_knowledge
 from agent_runtime import crew_json
 
 
@@ -82,8 +83,37 @@ Retrieved sources:
 """
     try:
         response = _generate(prompt)
-    except Exception as exc:
-        return {"ok": False, "error": "Knowledge search is temporarily unavailable."}
+    except Exception:
+        # The retrieved RAG evidence is still authoritative even when the
+        # optional answer-generation model is unavailable. Return a grounded
+        # evidence-based response rather than exposing an integration failure
+        # or inventing a policy.
+        # Prefer a directly titled knowledge source when the retrieval set
+        # contains one; this avoids answering a policy question only from a
+        # related process that merely references that policy.
+        query_tokens = {x for x in _retrieval_query(question).casefold().split() if len(x) >= 4}
+        ranked = sorted(
+            results,
+            key=lambda row: (
+                len(query_tokens & {x for x in str(row.get("title", "")).casefold().split() if len(x) >= 4}),
+                float(row.get("score", 0) or 0),
+            ),
+            reverse=True,
+        )
+        best = ranked[0]
+        evidence = str(best.get("content", "")).strip()
+        if best.get("source_type") == "knowledge" and best.get("source_id") is not None:
+            stored = get_knowledge(int(best["source_id"]))
+            if stored and str(stored.get("content", "")).strip():
+                evidence = str(stored["content"]).strip()
+        if not evidence:
+            return {
+                "ok": True,
+                "answer": "I couldn't find enough information in your Business Brain to answer this confidently.",
+                "sources": [],
+                "conflicts": conflicts,
+            }
+        response = f"According to the Business Brain source **{best.get('title', 'stored knowledge')}**:\n\n{evidence}"
 
     sources=[]
     seen=set()
