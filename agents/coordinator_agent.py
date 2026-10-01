@@ -1,92 +1,117 @@
-"""Business Brain Coordinator Agent.
-
-The coordinator is a real CrewAI agent: it decides which specialist workflow should
-handle a request. Deterministic catalog/keyword checks are kept only as a safe
-fallback so the app still works if Groq/CrewAI is temporarily unavailable.
-"""
 import json
-import re
 from agent_runtime import crew_json
 
 ROUTES = {"sale", "receipt", "operations", "knowledge", "unknown"}
 
 
-def _catalog_context(business_id: int) -> str:
-    try:
-        from database import list_products
-        rows = list_products(business_id)
-        parts = []
-        for p in rows[:100]:
-            aliases = [a.strip() for a in str(p.get("aliases", "")).split(",") if a.strip()]
-            parts.append(f"{p.get('name','')} | aliases: {', '.join(aliases)}")
-        return "\n".join(parts)
-    except Exception:
-        return ""
-
-
-def _fallback_route(text: str, business_id: int = 1):
+def _fallback_route(text: str):
     q = (text or "").lower()
-    if any(x in q for x in ["receipt", "رسید", "verify", "invoice", "bill"]):
-        return "receipt", "receipt workflow detected"
-    if any(x in q for x in ["policy", "refund", "procedure", "process", "rule", "sop", "knowledge"]):
-        return "knowledge", "knowledge workflow detected"
+    if any(x in q for x in ["receipt", "رسید", "verify"]):
+        return "receipt"
+    if any(x in q for x in ["stock", "inventory", "supplier", "order bana", "low stock", "flour ka stock"]):
+        return "operations"
+    if any(x in q for x in ["policy", "refund", "procedure", "process", "rule"]):
+        return "knowledge"
+    if any(x in q for x in ["pepsi", "tissue", "surf", "flour", "sale", "sell", "buy", "chahiye"]):
+        return "sale"
+    return "unknown"
+
+
+
+def _deterministic_route(text: str, business_id: int = 1) -> str:
+    """Safe fallback router used when the LLM/CrewAI router is unavailable."""
+    text = (text or "").strip().lower()
+
+    receipt_words = [
+        "receipt", "bill", "invoice", "رسید", "بل", "تصویر", "photo", "upload"
+    ]
+    knowledge_words = [
+        "policy", "refund", "procedure", "process", "rule", "sop",
+        "policy kya", "کیا طریقہ", "پالیسی", "قانون", "طریقہ"
+    ]
+    operations_words = [
+        "stock", "inventory", "low stock", "restock", "supplier",
+        "reorder", "order from supplier", "سٹاک", "انوینٹری", "سپلائر",
+        "دوبارہ منگوا", "کم سٹاک"
+    ]
+    sale_words = [
+        "sale", "sell", "buy", "chahiye", "need", "cart", "order",
+        "خرید", "چاہیے", "لینا", "دو", "دیں"
+    ]
+
+    if any(k in text for k in receipt_words):
+        return "receipt"
+
+    if any(k in text for k in knowledge_words):
+        return "knowledge"
+
+    if any(k in text for k in operations_words):
+        return "operations"
+
+    # Product/catalog evidence is a strong sale signal.
     try:
-        from database import list_products
-        for p in list_products(business_id):
-            terms = [p.get("name", "")] + [a.strip() for a in str(p.get("aliases", "")).split(",") if a.strip()]
-            if any(t and t.lower() in q for t in terms):
-                return "sale", "known catalog product detected"
+        products = list_products(business_id)
+        for p in products:
+            hay = " ".join(
+                str(p.get(k, "")) for k in ("name", "aliases", "sku")
+            ).lower()
+            if hay and any(token in text for token in hay.split(",") if token.strip()):
+                return "sale"
     except Exception:
         pass
-    if any(x in q for x in ["stock", "inventory", "supplier", "low stock", "reorder", "restock", "order bana"]):
-        return "operations", "operations workflow detected"
-    if any(x in q for x in ["sale", "sell", "buy", "chahiye", "چاہیے", "کلو", "quantity", "price"]):
-        return "sale", "sales workflow detected"
-    return "unknown", "no specialist workflow detected"
+
+    if any(k in text for k in sale_words):
+        return "sale"
+
+    return "unknown"
 
 
-def route_request(text: str, business_id: int = 1) -> dict:
-    """Use the Coordinator Agent to route a request to one specialist.
-
-    CrewAI/Groq is the primary router. The fallback is deterministic and never
-    replaces a valid catalog match when the LLM is unavailable.
+def route_request(text: str, business_id: int = 1) -> str:
     """
-    fallback_route, fallback_reason = _fallback_route(text, business_id)
-    catalog = _catalog_context(business_id)
+    CrewAI-first Coordinator Agent.
+
+    The Coordinator is the entry point for natural-language requests.
+    It asks the LLM to select one specialized Business Brain agent and
+    validates the result against the allowed routes. If the LLM/CrewAI
+    call fails or returns an invalid route, the deterministic router keeps
+    the application usable.
+    """
     prompt = f"""
-You are the Coordinator Agent for a small-shop Business Brain.
-Route the user's request to exactly ONE specialist:
-- sale: product purchase/sale/order, product price, quantity, cart
-- receipt: receipt/invoice image checking or verification
-- operations: stock, inventory, low stock, restock, supplier, reorder
-- knowledge: business policies, SOPs, procedures, responsibilities, stored documents
-- unknown: genuinely unrelated or unclear requests
+You are the Coordinator Agent for Business Brain, a multi-agent shop
+operations assistant.
 
-Never invent facts. Do not answer the business question yourself.
-Return ONLY JSON: {{"route":"sale|receipt|operations|knowledge|unknown","reason":"short reason"}}
+Choose exactly ONE route for this user request:
 
-Business catalog (names and aliases only):
-{catalog or '(catalog unavailable)'}
+- sale: product purchase/sale, cart, quantity, product price, new order
+- receipt: receipt/bill/invoice image upload, receipt checking or verification
+- operations: inventory, stock, low-stock, restocking, supplier, reorder
+- knowledge: business policies, SOPs, procedures, rules, business knowledge
+- unknown: anything that does not clearly belong to the above
+
+Rules:
+1. Return ONLY one word: sale, receipt, operations, knowledge, or unknown.
+2. Do not answer the user.
+3. Do not invent business facts.
+4. Prefer the most specific route.
+5. Current business_id is {business_id}.
 
 User request:
 {text}
-"""
+""".strip()
+
     try:
         result = crew_json(
-            role="Coordinator Agent",
-            goal="Route every business request to the correct specialist agent.",
-            backstory=(
-                "You are the central dispatcher of Business Brain. You do not perform the specialist task; "
-                "you select the correct specialist and keep the workflow grounded in the shop's real catalog."
-            ),
-            prompt=prompt,
-            fallback={"route": fallback_route, "reason": fallback_reason},
+            agent_role="Business Brain Coordinator Agent",
+            task_description=prompt,
+            expected_schema={
+                "route": "sale | receipt | operations | knowledge | unknown"
+            },
         )
-        route = str(result.get("route", "unknown")).strip().lower()
-        if route not in ROUTES:
-            route, reason = fallback_route, fallback_reason
-        else:
-            reason = str(result.get("reason", "Coordinator selected specialist"))
-        return {"route": route, "reason": reason, "agent": "Coordinator Agent", "crew_ai": True}
+
+        route = str(result.get("route", "")).strip().lower()
+        if route in ROUTES:
+            return route
     except Exception:
-        return {"route": fallback_route, "reason": fallback_reason, "agent": "Coordinator Agent", "crew_ai": False}
+        pass
+
+    return _deterministic_route(text, business_id)
