@@ -45,6 +45,25 @@ def current_business_id():
     return int((st.session_state.get("user") or {}).get("business_id") or 1)
 
 
+def receipt_download_text(sale):
+    lines = [
+        "BUSINESS BRAIN — SALE RECEIPT",
+        "=" * 38,
+        f"Sale Reference: {sale.get('transaction_ref','')}",
+        f"Sale ID: #{sale.get('id','')}",
+        f"Date: {sale.get('created_at','')}",
+        "",
+    ]
+    for item in sale.get("items", []):
+        qty=float(item.get("quantity",0) or 0)
+        price=float(item.get("unit_price",0) or 0)
+        subtotal=float(item.get("subtotal",0) or 0)
+        lines.append(f"{item.get('name','Product')}  x {qty:g}")
+        lines.append(f"  Rs. {price:,.2f} each = Rs. {subtotal:,.2f}")
+    lines += ["", "=" * 38, f"TOTAL: Rs. {float(sale.get('total',0) or 0):,.2f}", "", "Thank you."]
+    return "\n".join(lines)
+
+
 def is_manager_or_owner():
     return (st.session_state.get("user") or {}).get("role") in {"Owner", "Manager"}
 
@@ -190,7 +209,7 @@ page = st.session_state.page
 if page == "Dashboard":
     business_id=current_business_id()
     ops=get_daily_operations(business_id)
-    page_header("Good morning 👋", "The few things worth looking at today.", "Home")
+    page_header("Good morning 👋", "A quick view of today’s sales, stock, and pending actions.", "Home")
     cols=st.columns(4)
     stats=[
         ("Today’s sales",f"Rs. {ops['sales_total']:,.0f}",f"{ops['sales_count']} sales"),
@@ -369,10 +388,11 @@ elif page == "Smart Sale":
         if st.session_state.sale_last_id:
             sale=get_sale(st.session_state.sale_last_id,business_id)
             if sale:
-                st.markdown(f"<div class='premium-card'><div class='eyebrow'>SALE CONFIRMED</div><div style='font-size:1.35rem;font-weight:750'>{sale['transaction_ref']}</div><div class='muted'>Sale #{sale['id']} · {sale['created_at']}</div></div>",unsafe_allow_html=True)
+                st.markdown("<div class='receipt-card'><div class='receipt-head'><div><div class='receipt-title'>SALE CONFIRMED</div><div class='muted'>Sale #" + str(sale['id']) + " · " + str(sale['created_at']) + "</div></div><div class='receipt-ref'>" + str(sale['transaction_ref']) + "</div></div>", unsafe_allow_html=True)
                 for item in sale["items"]:
-                    st.markdown(f"**{item['name']}**<br>× {float(item['quantity']):g} · Rs. {float(item['unit_price']):,.2f} each<br>Rs. {float(item['subtotal']):,.2f}", unsafe_allow_html=True)
-                st.markdown(f"### Total · Rs. {float(sale['total']):,.2f}")
+                    st.markdown(f"<div class='receipt-row'><span><b>{item['name']}</b> × {float(item['quantity']):g}<br><span class='muted'>Rs. {float(item['unit_price']):,.2f} each</span></span><b>Rs. {float(item['subtotal']):,.2f}</b></div>", unsafe_allow_html=True)
+                st.markdown(f"<div class='receipt-total'><span>Total</span><span>Rs. {float(sale['total']):,.2f}</span></div></div>", unsafe_allow_html=True)
+                st.download_button("⬇️ Download Receipt", data=receipt_download_text(sale), file_name=f"{sale['transaction_ref']}_receipt.txt", mime="text/plain", use_container_width=True, key=f"download_receipt_{sale['id']}")
             receipt=st.file_uploader("Verify an uploaded receipt",type=["png","jpg","jpeg","webp"],key="receipt_upload")
             if receipt and st.button("Verify Receipt",use_container_width=True):
                 try:
