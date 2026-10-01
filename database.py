@@ -612,11 +612,11 @@ def list_chunks():
     c.close()
     return [dict(r) for r in rows]
 
-def log_activity(action, details="", user_name="System"):
-    c=_conn()
+def log_activity(action, details="", user_name="System", business_id=1):
+    c = _conn()
     actor = f"{user_name}: {details}" if user_name else details
-    c.execute("INSERT INTO activity (business_id,action,details,created_at) VALUES (1,?,?,?)",
-              (action, actor, datetime.now().strftime("%Y-%m-%d %H:%M")))
+    c.execute("INSERT INTO activity (business_id,action,details,created_at) VALUES (?,?,?,?)",
+              (business_id, action, actor, datetime.now().strftime("%Y-%m-%d %H:%M")))
     c.commit(); c.close()
 
 def get_activity(limit=20):
@@ -705,25 +705,174 @@ def find_supplier_for_product(product_id, business_id=1):
 
 
 def create_sale(transaction_ref, total, created_by=0, status="Confirmed", business_id=1):
-    c = _conn(); now=datetime.now().isoformat(timespec="seconds")
-    cur=c.execute("INSERT INTO sales (business_id,transaction_ref,total,status,created_by,created_at) VALUES (?,?,?,?,?,?)", (business_id,transaction_ref,total,status,created_by,now)); sale_id=cur.lastrowid; c.commit(); c.close(); return sale_id
+    c = _conn()
+    now = datetime.now().isoformat(timespec="seconds")
+    try:
+        cur = c.execute(
+            "INSERT INTO sales (business_id,transaction_ref,total,status,created_by,created_at) VALUES (?,?,?,?,?,?)",
+            (business_id, transaction_ref, float(total), status, created_by, now),
+        )
+        sale_id = cur.lastrowid
+        c.commit()
+        return sale_id
+    finally:
+        c.close()
 
 
 def create_sale_items(sale_id, items, business_id=1):
-    c=_conn()
-    for item in items:
-        c.execute("INSERT INTO sale_items (sale_id,product_id,quantity,unit_price,subtotal) VALUES (?,?,?,?,?)", (sale_id,item["product_id"],item["quantity"],item["unit_price"],item["subtotal"]))
-        c.execute("UPDATE products SET stock_quantity=stock_quantity-?, updated_at=? WHERE id=? AND business_id=?", (item["quantity"],datetime.now().isoformat(timespec="seconds"),item["product_id"],business_id))
-    c.commit(); c.close()
+    c = _conn()
+    try:
+        for item in items:
+            c.execute(
+                "INSERT INTO sale_items (sale_id,product_id,quantity,unit_price,subtotal) VALUES (?,?,?,?,?)",
+                (sale_id, item["product_id"], item["quantity"], item["unit_price"], item["subtotal"]),
+            )
+            c.execute(
+                "UPDATE products SET stock_quantity=stock_quantity-?, updated_at=? WHERE id=? AND business_id=?",
+                (item["quantity"], datetime.now().isoformat(timespec="seconds"), item["product_id"], business_id),
+            )
+        c.commit()
+    except Exception:
+        c.rollback()
+        raise
+    finally:
+        c.close()
 
+
+def save_confirmed_sale(transaction_ref, total, items, created_by=0, business_id=1):
+    """Atomically validate current DB prices/stock, save the sale, and deduct inventory."""
+    if not items:
+        raise ValueError("The cart is empty.")
+    c = _conn()
+    now = datetime.now().isoformat(timespec="seconds")
+    try:
+        checked = []
+        calculated_total = 0.0
+        for item in items:
+            product = c.execute(
+                "SELECT id,name,price,stock_quantity,active FROM products WHERE id=? AND business_id=?",
+                (int(item["product_id"]), business_id),
+            ).fetchone()
+            if not product or not product["active"]:
+                raise ValueError("One of the selected products is no longer available.")
+            quantity = float(item["quantity"])
+            if quantity <= 0:
+                raise ValueError(f"Quantity for {product['name']} must be greater than zero.")
+            if quantity > float(product["stock_quantity"]):
+                raise ValueError(f"Not enough stock for {product['name']}. Available: {product['stock_quantity']:g}.")
+            unit_price = float(product["price"])
+            subtotal = round(quantity * unit_price, 2)
+            calculated_total += subtotal
+            checked.append((product, quantity, unit_price, subtotal))
+
+        if round(float(total), 2) != round(calculated_total, 2):
+            raise ValueError("The cart total changed. Please rebuild the cart before confirming the sale.")
+
+        cur = c.execute(
+            "INSERT INTO sales (business_id,transaction_ref,total,status,created_by,created_at) VALUES (?,?,?,?,?,?)",
+            (business_id, transaction_ref, round(calculated_total, 2), "Confirmed", created_by, now),
+        )
+        sale_id = cur.lastrowid
+        for product, quantity, unit_price, subtotal in checked:
+            c.execute(
+                "INSERT INTO sale_items (sale_id,product_id,quantity,unit_price,subtotal) VALUES (?,?,?,?,?)",
+                (sale_id, product["id"], quantity, unit_price, subtotal),
+            )
+            c.execute(
+                "UPDATE products SET stock_quantity=stock_quantity-?, updated_at=? WHERE id=? AND business_id=? AND stock_quantity>=?",
+                (quantity, now, product["id"], business_id, quantity),
+            )
+            if c.execute("SELECT changes()").fetchone()[0] != 1:
+                raise ValueError(f"Stock changed while confirming {product['name']}. Please try again.")
+        c.commit()
+        return sale_id
+    except Exception:
+        c.rollback()
+        raise
+    finally:
+        c.close()
 
 def create_supplier_order(supplier_id, items, created_by=0, business_id=1):
-    c=_conn(); now=datetime.now().isoformat(timespec="seconds")
-    cur=c.execute("INSERT INTO supplier_orders (business_id,supplier_id,status,created_by,created_at,updated_at) VALUES (?,?,?,?,?,?)", (business_id,supplier_id,"Draft",created_by,now,now)); order_id=cur.lastrowid
-    for item in items: c.execute("INSERT INTO supplier_order_items (supplier_order_id,product_id,quantity,unit_price) VALUES (?,?,?,?)", (order_id,item["product_id"],item["quantity"],item.get("unit_price")))
-    c.commit(); c.close(); return order_id
+    if not items:
+        raise ValueError("Supplier order must contain at least one item.")
+    c = _conn()
+    now = datetime.now().isoformat(timespec="seconds")
+    try:
+        supplier = c.execute(
+            "SELECT id FROM suppliers WHERE id=? AND business_id=? AND active=1",
+            (supplier_id, business_id),
+        ).fetchone()
+        if not supplier:
+            raise ValueError("Supplier is not available for this business.")
+        cur = c.execute(
+            "INSERT INTO supplier_orders (business_id,supplier_id,status,created_by,created_at,updated_at) VALUES (?,?,?,?,?,?)",
+            (business_id, supplier_id, "Draft", created_by, now, now),
+        )
+        order_id = cur.lastrowid
+        for item in items:
+            quantity = float(item.get("quantity", 0))
+            if quantity <= 0:
+                raise ValueError("Supplier order quantity must be greater than zero.")
+            product = c.execute(
+                "SELECT id FROM products WHERE id=? AND business_id=? AND active=1",
+                (int(item["product_id"]), business_id),
+            ).fetchone()
+            if not product:
+                raise ValueError("One of the supplier-order products is unavailable.")
+            c.execute(
+                "INSERT INTO supplier_order_items (supplier_order_id,product_id,quantity,unit_price) VALUES (?,?,?,?)",
+                (order_id, product["id"], quantity, item.get("unit_price")),
+            )
+        c.commit()
+        return order_id
+    except Exception:
+        c.rollback()
+        raise
+    finally:
+        c.close()
 
 
 def save_receipt_verification(sale_id, status, extracted_receipt, mismatches, created_by=0, business_id=1):
     c=_conn(); now=datetime.now().isoformat(timespec="seconds")
     cur=c.execute("INSERT INTO receipt_verifications (business_id,sale_id,status,extracted_receipt_json,mismatches_json,created_by,created_at) VALUES (?,?,?,?,?,?,?)", (business_id,sale_id,status,json.dumps(extracted_receipt or {}),json.dumps(mismatches or []),created_by,now)); rid=cur.lastrowid; c.commit(); c.close(); return rid
+
+# ---------- Operational reporting helpers ----------
+def get_daily_operations(business_id=1):
+    c = _conn()
+    today = datetime.now().date().isoformat()
+    low = c.execute("SELECT id,name,stock_quantity,minimum_stock,unit FROM products WHERE business_id=? AND active=1 AND stock_quantity<=minimum_stock ORDER BY name", (business_id,)).fetchall()
+    sales_today = c.execute("SELECT COUNT(*) AS n, COALESCE(SUM(total),0) AS total FROM sales WHERE business_id=? AND date(created_at)=?", (business_id,today)).fetchone()
+    pending_orders = c.execute("SELECT COUNT(*) AS n FROM supplier_orders WHERE business_id=? AND status IN ('Draft','Pending Approval')", (business_id,)).fetchone()[0]
+    recent = c.execute("SELECT id,transaction_ref,total,status,created_at FROM sales WHERE business_id=? ORDER BY id DESC LIMIT 8", (business_id,)).fetchall()
+    c.close()
+    return {
+        "low_stock": [dict(r) for r in low],
+        "sales_count": sales_today["n"],
+        "sales_total": sales_today["total"],
+        "pending_supplier_orders": pending_orders,
+        "recent_sales": [dict(r) for r in recent],
+    }
+
+
+def get_sale(sale_id, business_id=1):
+    c = _conn()
+    sale = c.execute("SELECT * FROM sales WHERE id=? AND business_id=?", (sale_id,business_id)).fetchone()
+    if not sale:
+        c.close(); return None
+    items = c.execute("""SELECT si.*, p.name, p.unit FROM sale_items si JOIN products p ON p.id=si.product_id WHERE si.sale_id=?""", (sale_id,)).fetchall()
+    c.close()
+    data = dict(sale); data["items"] = [dict(x) for x in items]
+    return data
+
+
+def list_supplier_orders(business_id=1, limit=20):
+    c=_conn()
+    rows=c.execute("""SELECT so.*, s.name AS supplier_name FROM supplier_orders so
+        JOIN suppliers s ON s.id=so.supplier_id WHERE so.business_id=? ORDER BY so.id DESC LIMIT ?""", (business_id,limit)).fetchall()
+    c.close(); return [dict(r) for r in rows]
+
+
+def approve_supplier_order(order_id, approved_by=0, business_id=1):
+    c=_conn(); now=datetime.now().isoformat(timespec="seconds")
+    cur=c.execute("UPDATE supplier_orders SET status='Approved', approved_by=?, updated_at=? WHERE id=? AND business_id=? AND status IN ('Draft','Pending Approval')", (approved_by,now,order_id,business_id))
+    c.commit(); ok=cur.rowcount>0; c.close(); return ok

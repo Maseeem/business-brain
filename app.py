@@ -1,20 +1,29 @@
 import sqlite3
+import os
 import streamlit as st
 from dotenv import load_dotenv
 
 from database import (
-    init_db, seed_demo_data, get_business, list_processes, list_knowledge, get_activity,
+    init_db, seed_demo_data, seed_operational_data, get_business, list_processes, list_knowledge, get_activity,
     get_process, create_process, update_process, delete_process, get_process_versions, restore_process_version,
     authenticate_user, list_users, create_user, get_user, update_user, reset_user_password, update_business, log_activity, ensure_demo_users,
+    get_daily_operations, create_sale, create_sale_items, get_sale, approve_supplier_order, list_supplier_orders,
 )
 from agent import generate_sop_from_inputs, answer_business_question, transcribe_audio_to_text
+from agents.coordinator_agent import route_request
+from agents.smart_sale_agent import build_cart, apply_cart_edit
+from agents.operations_agent import low_stock_items, supplier_draft, classify_operation_request
+from agents.knowledge_agent import answer as knowledge_answer
+from agents.receipt_agent import verify_receipt
 from rag import ingest_knowledge_file, edit_knowledge_item, remove_knowledge_item, detect_knowledge_contradictions, index_process, bootstrap_index
 from ui import inject_css, sidebar, page_header, stat_card, empty_state, source_card
 
 load_dotenv()
 init_db()
-seed_demo_data()
-ensure_demo_users()
+if os.getenv("SEED_DEMO_DATA", "true").lower() == "true":
+    seed_demo_data()
+    seed_operational_data()
+    ensure_demo_users()
 bootstrap_index()
 
 st.set_page_config(page_title="Business Brain", page_icon="◈", layout="wide", initial_sidebar_state="expanded")
@@ -29,6 +38,13 @@ ROLE_PERMISSIONS = {
 def can(action):
     user = st.session_state.get("user") or {}
     return ROLE_PERMISSIONS.get(user.get("role", "Employee"), {}).get(action, False)
+
+def current_business_id():
+    return int((st.session_state.get("user") or {}).get("business_id") or 1)
+
+
+def is_manager_or_owner():
+    return (st.session_state.get("user") or {}).get("role") in {"Owner", "Manager"}
 
 def _as_list(value):
     if value is None: return []
@@ -148,6 +164,8 @@ if "chat" not in st.session_state: st.session_state.chat = []
 if "draft_sop" not in st.session_state: st.session_state.draft_sop = None
 if "draft_sources" not in st.session_state: st.session_state.draft_sources = []
 if "notice" not in st.session_state: st.session_state.notice = None
+if "sale_cart" not in st.session_state: st.session_state.sale_cart = []
+if "sale_last_id" not in st.session_state: st.session_state.sale_last_id = None
 
 sidebar(business)
 with st.sidebar:
@@ -175,8 +193,8 @@ if page == "Dashboard":
     left,right=st.columns([1.65,1],gap="large")
     with left:
         st.markdown("### Quick actions")
-        qcols=st.columns(3)
-        actions=[("＋","Record Process","Turn how your team works into an SOP.","Record Process",can("record")),("✦","Add Knowledge","Teach Business Brain something new.","Knowledge",can("knowledge")),("⌕","Ask Brain","Get an evidence-backed answer.","Ask Brain",True)]
+        qcols=st.columns(4)
+        actions=[("＋","New Sale","Create a cart from voice or text.","Smart Sale",True),("◉","Check Stock","See low-stock items and supplier drafts.","Daily Operations",True),("✦","Ask Brain","Get an evidence-backed answer.","Ask Brain",True),("↗","Record Process","Turn how your team works into an SOP.","Record Process",can("record"))]
         for c,(icon,title,desc,target,allowed) in zip(qcols,actions):
             with c:
                 st.markdown(f"<div class='action-card'><div class='action-icon'>{icon}</div><div class='action-title'>{title}</div><div class='action-desc'>{desc}</div></div>",unsafe_allow_html=True)
@@ -197,6 +215,140 @@ if page == "Dashboard":
         if not activity: empty_state("Nothing here yet","Your workspace activity will appear here.")
         for item in activity:
             st.markdown(f"<div class='activity-row'><div class='activity-dot'></div><div><b>{item['action']}</b><div class='muted'>{item['details']}</div><div class='tiny'>{item['created_at']}</div></div></div>",unsafe_allow_html=True)
+
+# ---------- Smart Sale ----------
+elif page == "Smart Sale":
+    business_id = current_business_id()
+    page_header("Smart Sale", "Speak or type an order. Prices, totals and stock checks stay deterministic.", "Sales Agent")
+    st.markdown("<div class='hero'><div class='hero-title'>Sell in one simple flow.</div><div class='hero-copy'>Coordinator → Smart Sale Agent → Product/Cart tools → database validation → human confirmation.</div></div>", unsafe_allow_html=True)
+    st.markdown("<div class='section-gap'></div>", unsafe_allow_html=True)
+    col1, col2 = st.columns([1.25, .9], gap="large")
+    with col1:
+        st.markdown("### 1 · Capture order")
+        audio = st.audio_input("🎙️ Speak Order", key="sale_audio")
+        if audio and st.button("Transcribe voice order", use_container_width=True):
+            try:
+                with st.spinner("Transcribing order…"):
+                    st.session_state.sale_input_value = transcribe_audio_to_text(audio)
+                st.success("Voice order transcribed. Review it before pricing.")
+            except Exception:
+                st.error("I couldn't transcribe that recording. Please try again or type the order.")
+        order = st.text_area("⌨️ Type Order", value=st.session_state.get("sale_input_value", ""), placeholder="1 Pepsi, 2 tissue aur 1 Surf", height=105, key="sale_input")
+        c1, c2 = st.columns(2)
+        with c1:
+            if st.button("Understand Order", type="primary", use_container_width=True) and order.strip():
+                try:
+                    route = route_request(order)
+                    if route["route"] != "sale":
+                        st.warning(f"This request looks like a {route['route']} request. Please use the matching workflow.")
+                    else:
+                        result = build_cart(order, business_id)
+                        if not result["cart"]:
+                            st.warning("I couldn't identify a product from that order. Please select a product name or try again.")
+                        else:
+                            st.session_state.sale_cart = result["cart"]
+                            st.session_state.sale_route = route
+                            st.success("Order understood. Prices were loaded from the database.")
+                except Exception:
+                    st.error("I couldn't build the cart. Please check the product names and quantities.")
+        with c2:
+            if st.button("Clear Cart", use_container_width=True):
+                st.session_state.sale_cart = []
+                st.session_state.sale_last_id = None
+                st.session_state.sale_input_value = ""
+                st.rerun()
+        if st.session_state.sale_cart:
+            st.markdown("### 2 · Review cart")
+            for item in st.session_state.sale_cart:
+                a, b, c, d = st.columns([3, 1, 1.4, .8])
+                with a: st.write(item["name"])
+                with b: st.write(f"× {item['quantity']:g}")
+                with c: st.write(f"Rs. {item['unit_price']:,.2f}")
+                with d: st.write(f"Rs. {item['subtotal']:,.2f}")
+            from tools.cart_tools import calculate_total
+            total = calculate_total(st.session_state.sale_cart)
+            st.markdown(f"<div class='premium-card'><div class='eyebrow'>Deterministic total</div><div class='big-number'>Rs. {total:,.2f}</div><div class='muted'>Calculated by Python from database prices.</div></div>", unsafe_allow_html=True)
+            edit = st.text_input("Edit current cart", placeholder="Tissue 3 kar do", key="cart_edit")
+            if st.button("Apply Edit", use_container_width=True) and edit.strip():
+                try:
+                    edited = apply_cart_edit(st.session_state.sale_cart, edit, business_id)
+                    if not edited["changed"]:
+                        st.warning("I couldn't match that edit to a product in the current cart.")
+                    else:
+                        st.session_state.sale_cart = edited["cart"]
+                        st.rerun()
+                except Exception:
+                    st.error("I couldn't apply that cart edit. Please try a quantity such as 'Tissue 3 kar do'.")
+            if st.button("Confirm Sale", type="primary", use_container_width=True):
+                try:
+                    import uuid
+                    ref = f"BB-{uuid.uuid4().hex[:8].upper()}"
+                    from tools.database_tools import save_sale
+                    sale_id = save_sale(ref, total, st.session_state.sale_cart, st.session_state.user["id"], business_id)
+                    st.session_state.sale_last_id = sale_id
+                    log_activity("Sale confirmed", f"{ref} · Rs. {total:,.2f}", st.session_state.user["name"], business_id)
+                    st.success(f"Sale {ref} saved successfully.")
+                except ValueError as exc:
+                    st.error(str(exc))
+                except Exception:
+                    st.error("Sale could not be saved. Please try again.")
+    with col2:
+        st.markdown("### 3 · Verify receipt")
+        st.caption("Gemini reads the image; Python performs the comparison.")
+        if st.session_state.sale_last_id:
+            sale = get_sale(st.session_state.sale_last_id, business_id)
+            receipt = st.file_uploader("Receipt image", type=["png", "jpg", "jpeg", "webp"], key="receipt_upload")
+            if receipt and st.button("Verify Receipt", use_container_width=True):
+                try:
+                    expected = [{"product_id": x["product_id"], "name": x["name"], "quantity": x["quantity"], "unit_price": x["unit_price"]} for x in sale["items"]]
+                    result = verify_receipt(receipt.getvalue(), receipt.type, expected, sale["total"])
+                    from database import save_receipt_verification
+                    save_receipt_verification(sale["id"], result.get("status", "Unclear"), result.get("extracted", {}), result.get("mismatches", []), st.session_state.user["id"], business_id)
+                    if result.get("status") == "Match": st.success("Receipt matches the saved order.")
+                    elif result.get("status") == "Unclear": st.warning("I couldn't read part of the receipt clearly. Please upload a clearer image or verify manually.")
+                    else: st.warning("Possible mismatch detected. Please verify.")
+                    for mismatch in result.get("mismatches", []): st.markdown(f"- {mismatch.get('message', 'Please verify this receipt detail.')}")
+                except Exception:
+                    st.error("Receipt verification could not be completed. Please try a clearer image.")
+        else:
+            st.info("Confirm a sale first, then its receipt can be verified here.")
+
+# ---------- Daily Operations ----------
+elif page == "Daily Operations":
+    page_header("Daily Operations", "Only the business items that actually need attention.", "Operations Agent")
+    business_id = current_business_id()
+    data=get_daily_operations(business_id)
+    cols=st.columns(4)
+    with cols[0]: stat_card("Sales today",data["sales_count"],f"Rs. {data['sales_total']:,.0f} total")
+    with cols[1]: stat_card("Low stock",len(data["low_stock"]),"Actual database levels")
+    with cols[2]: stat_card("Supplier drafts",data["pending_supplier_orders"],"Awaiting approval")
+    with cols[3]: stat_card("Recent sales",len(data["recent_sales"]),"Latest transactions")
+    st.markdown("<div class='section-gap'></div>",unsafe_allow_html=True)
+    left,right=st.columns([1.2,1],gap="large")
+    with left:
+        st.markdown("### What needs attention?")
+        if not data["low_stock"]: st.success("No low-stock products right now.")
+        for item in data["low_stock"]:
+            st.markdown(f"<div class='premium-card' style='margin:.45rem 0'><span class='status-pill'>LOW STOCK</span><br><b>{item['name']}</b><div class='muted'>{item['stock']:g} {item['unit']} available · minimum {item['minimum_stock']:g}</div></div>",unsafe_allow_html=True)
+            if st.button(f"Create draft · {item['name']}",key=f"draft_{item['id']}",use_container_width=True):
+                try:
+                    draft=supplier_draft(item["id"],business_id,None,st.session_state.user["id"])
+                    from tools.supplier_tools import create_supplier_order_draft
+                    order_id=create_supplier_order_draft(draft["supplier"]["id"],[{"product_id":item["id"],"quantity":draft["suggested_quantity"],"unit_price":draft["supplier"].get("supplier_price")}],st.session_state.user["id"],business_id)
+                    log_activity("Supplier order draft created",f"{draft['supplier']['name']} · {item['name']} × {draft['suggested_quantity']:g}",st.session_state.user["name"],business_id)
+                    st.success(f"Draft #{order_id} created. Approval is still required.")
+                except Exception as e: st.error(str(e))
+    with right:
+        st.markdown("### Supplier orders")
+        orders=list_supplier_orders(business_id,8)
+        if not orders: st.caption("No supplier drafts yet.")
+        for order in orders:
+            st.markdown(f"<div class='premium-card' style='margin:.45rem 0'><b>#{order['id']} · {order['supplier_name']}</b><div class='muted'>{order['status']} · {order['created_at']}</div></div>",unsafe_allow_html=True)
+            if order["status"] in ("Draft","Pending Approval") and st.button("Approve order",key=f"approve_{order['id']}",type="primary",use_container_width=True):
+                if not is_manager_or_owner():
+                    st.error("Only an Owner or Manager can approve supplier orders.")
+                elif approve_supplier_order(order["id"],st.session_state.user["id"],business_id):
+                    log_activity("Supplier order approved",f"Order #{order['id']} · {order['supplier_name']}",st.session_state.user["name"],business_id); st.success("Order approved."); st.rerun()
 
 # ---------- Record Process ----------
 elif page == "Record Process":

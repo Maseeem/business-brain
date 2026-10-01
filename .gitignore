@@ -1,6 +1,10 @@
-.env
 .venv/
+venv/
 __pycache__/
 *.pyc
+.env
+.env.*
+!.env.example
 business_brain.db
 .streamlit/
+.DS_Store
