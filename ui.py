@@ -24,10 +24,10 @@ def inject_css():
     .stApp{background:linear-gradient(180deg,#fbfdfc 0%,#f4f8f5 100%);color:var(--text)}
     [data-testid="stSidebar"]{background:#ffffff;border-right:1px solid var(--line)}
     [data-testid="stSidebar"]>div:first-child{padding:.8rem .7rem}
-    .brand{padding:.5rem .65rem 1.05rem}.brand-name{font-size:1.15rem;font-weight:800;letter-spacing:-.04em;color:#1e293b}.brand-sub{color:#8993a3;font-size:.7rem;margin-top:.2rem}
+    .brand{padding:.5rem .65rem 1.05rem}.brand-name{font-size:1.15rem;font-weight:800;letter-spacing:-.04em;color:#155c3b}.brand-sub{color:#8993a3;font-size:.7rem;margin-top:.2rem}
     .nav-label{color:#98a1ae;font-size:.62rem;text-transform:uppercase;letter-spacing:.12em;padding:.7rem .65rem .35rem}
     .page-kicker{color:#7c8797;font-size:.65rem;text-transform:uppercase;letter-spacing:.12em;font-weight:700;margin-bottom:.25rem}
-    h1{font-size:2.15rem!important;letter-spacing:-.055em!important;color:#202938!important}.subtitle{color:var(--muted);font-size:.92rem}
+    h1{font-size:2.15rem!important;letter-spacing:-.055em!important;color:#243b31!important}.subtitle{color:#5f7067;font-size:.92rem;font-weight:500}
     .section-gap{height:.85rem}
     .hero{border:1px solid #cfe5d7;border-radius:22px;padding:1.3rem 1.4rem;background:linear-gradient(135deg,#edf9f1,#ffffff 72%);box-shadow:0 8px 28px rgba(42,66,100,.06)}
     .hero-title{font-size:1.55rem;font-weight:800;letter-spacing:-.04em;color:#155c3b}.hero-copy{color:#69778a;margin-top:.25rem}
@@ -61,6 +61,22 @@ def inject_css():
     .receipt-card{background:#ffffff;border:1px solid #cfe5d7;border-radius:18px;padding:1.1rem 1.2rem;box-shadow:0 5px 18px rgba(35,75,52,.06)}
     .receipt-head{display:flex;justify-content:space-between;gap:1rem;align-items:flex-start;border-bottom:1px solid #e4eee8;padding-bottom:.8rem;margin-bottom:.75rem}
     .receipt-title{font-size:1.15rem;font-weight:800;color:#155c3b}.receipt-ref{color:#198754;font-weight:800}.receipt-row{display:flex;justify-content:space-between;gap:1rem;padding:.45rem 0;border-bottom:1px solid #eef3ef;color:#34443a}.receipt-total{display:flex;justify-content:space-between;padding-top:.85rem;font-size:1.1rem;font-weight:800;color:#155c3b}
+    /* Force Streamlit native widgets into the same light theme. */
+    .stFileUploader, [data-testid="stFileUploader"], [data-testid="stFileUploaderDropzone"]{background:#ffffff!important;color:#34443a!important;border-color:#cfe0d7!important}
+    [data-testid="stFileUploaderDropzone"] *{color:#34443a!important}
+    [data-testid="stFileUploaderDropzoneInstructions"] div, [data-testid="stFileUploaderDropzoneInstructions"] span{color:#52655b!important}
+    [data-testid="stFileUploaderDropzone"] small{color:#7a8a82!important}
+    [data-testid="stFileUploaderDropzone"] button{background:#eef8f2!important;color:#176b46!important;border:1px solid #cfe5d7!important}
+    [data-baseweb="select"]>div{background:#ffffff!important;color:#34443a!important;border-color:#dce3eb!important}
+    [data-baseweb="select"] *{color:#34443a!important}
+    [role="listbox"], [role="option"]{background:#ffffff!important;color:#34443a!important}
+    [data-testid="stMarkdownContainer"], [data-testid="stMarkdownContainer"] p, [data-testid="stMarkdownContainer"] li{color:#34443a}
+    [data-testid="stHeader"]{background:#f8fbf9!important}
+    [data-testid="stSidebar"] *{color:#34443a}
+    [data-testid="stSidebar"] .stButton>button{background:#ffffff!important;color:#34443a!important}
+    [data-testid="stSidebar"] .stButton>button[kind="primary"]{background:#198754!important;color:#ffffff!important}
+    .stTextInput input::placeholder,.stTextArea textarea::placeholder,.stNumberInput input::placeholder{color:#8a9891!important;opacity:1!important}
+    .stTextInput input:disabled,.stTextArea textarea:disabled,.stNumberInput input:disabled{background:#f5f8f6!important;color:#6b7b72!important}
     </style>
     """,unsafe_allow_html=True)
 
@@ -76,7 +92,7 @@ def sidebar(business):
         st.markdown("<div class='info-banner' style='font-size:.68rem'><b>Simple mode</b><br>Just tell Business Brain what you need. The agents handle the background work.</div>",unsafe_allow_html=True)
 
 def page_header(title,subtitle,kicker="Business Brain"):
-    st.markdown(f"<div class='page-kicker'>{kicker}</div>",unsafe_allow_html=True); st.title(title); st.markdown(f"<div class='subtitle'>{subtitle}</div>"); st.markdown("<div class='section-gap'></div>",unsafe_allow_html=True)
+    st.markdown(f"<div class='page-kicker'>{kicker}</div>",unsafe_allow_html=True); st.title(title); st.markdown(f"<div class='subtitle'>{subtitle}</div>",unsafe_allow_html=True); st.markdown("<div class='section-gap'></div>",unsafe_allow_html=True)
 
 def stat_card(label,value,sub):
     st.markdown(f"<div class='stat'><div class='stat-label'>{label}</div><div class='stat-value'>{value}</div><div class='stat-sub'>{sub}</div></div>",unsafe_allow_html=True)
