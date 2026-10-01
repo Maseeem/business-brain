@@ -8,7 +8,7 @@ from database import (
     get_process, create_process, update_process, delete_process, get_process_versions, restore_process_version,
     authenticate_user, list_users, create_user, get_user, update_user, reset_user_password, update_business, log_activity, ensure_demo_users,
     get_daily_operations, create_sale, create_sale_items, get_sale, approve_supplier_order, list_supplier_orders,
-    list_products, create_product, update_product, bulk_add_products, set_product_price,
+    list_products, get_product_by_id, create_product, update_product, bulk_add_products, set_product_price,
     add_business_memory, list_business_memory, delete_business_memory,
 )
 from agent import generate_sop_from_inputs, answer_business_question, transcribe_audio_to_text
@@ -170,6 +170,7 @@ if "notice" not in st.session_state: st.session_state.notice = None
 if "sale_cart" not in st.session_state: st.session_state.sale_cart = []
 if "sale_last_id" not in st.session_state: st.session_state.sale_last_id = None
 if "sale_input_value" not in st.session_state: st.session_state.sale_input_value = ""
+if "sale_order_items" not in st.session_state: st.session_state.sale_order_items = []
 if "sale_missing_price" not in st.session_state: st.session_state.sale_missing_price = []
 if "sale_confirmed_notice" not in st.session_state: st.session_state.sale_confirmed_notice = ""
 
@@ -229,7 +230,7 @@ if page == "Dashboard":
 # ---------- Smart Sale ----------
 elif page == "Smart Sale":
     business_id = current_business_id()
-    page_header("Smart Sale", "Speak or type an order. Prices, totals and stock checks stay deterministic.", "Sales Agent")
+    page_header("Smart Sale", "Speak or type an order. Every item stays visible with price and stock status before you confirm.", "Sales Agent")
     st.markdown("<div class='hero'><div class='hero-title'>Sell in one simple flow.</div><div class='hero-copy'>Coordinator → Smart Sale Agent → Product/Cart tools → database validation → human confirmation.</div></div>", unsafe_allow_html=True)
     st.markdown("<div class='section-gap'></div>", unsafe_allow_html=True)
     col1, col2 = st.columns([1.25, .9], gap="large")
@@ -250,6 +251,7 @@ elif page == "Smart Sale":
                         if transcript.strip():
                             result = build_cart(transcript, business_id)
                             st.session_state.sale_missing_price = result.get("missing_price", [])
+                            st.session_state.sale_order_items = result.get("parsed_items", [])
                             st.session_state.sale_cart = result.get("cart", [])
                             st.session_state.sale_route = route_request(transcript)
                             st.session_state.sale_voice_understood = True
@@ -268,22 +270,27 @@ elif page == "Smart Sale":
         with c1:
             if st.button("Understand Order", type="primary", use_container_width=True) and order.strip():
                 try:
-                    route = route_request(order)
-                    if route["route"] != "sale":
-                        st.warning(f"This request looks like a {route['route']} request. Please use the matching workflow.")
-                    else:
-                        result = build_cart(order, business_id)
-                        st.session_state.sale_missing_price = result.get("missing_price", [])
-                        if not result["cart"]:
-                            if result.get("missing_price"):
-                                st.warning("These products need prices before they can be sold: " + ", ".join(result["missing_price"]) + ". Open Inventory to set prices.")
-                            else:
-                                st.warning("I couldn't match any product in your shop catalog. Add the product in Inventory or try again.")
+                    # Smart Sale is already the selected workflow. Do not let the
+                    # general coordinator's LLM re-route a valid Urdu/Roman-Urdu sale
+                    # back to an unrelated workflow. The sale parser/catalog remain the
+                    # source of truth for product matching.
+                    result = build_cart(order, business_id)
+                    route = {"route": "sale", "reason": "Smart Sale workflow selected"}
+                    st.session_state.sale_missing_price = result.get("missing_price", [])
+                    st.session_state.sale_order_items = result.get("parsed_items", [])
+                    st.session_state.sale_route = route
+                    if not result["cart"]:
+                        if result.get("missing_price"):
+                            st.warning("These products are in your catalog but need real prices before they can be sold: " + ", ".join(result["missing_price"]) + ". Open Shop Catalog and set their prices.")
                         else:
-                            st.session_state.sale_cart = result["cart"]
-                            st.session_state.sale_route = route
-                            extra = (" Price missing for: " + ", ".join(result.get("missing_price",[])) + ".") if result.get("missing_price") else ""
-                            st.success("Order understood. Prices were loaded from your shop catalog." + extra)
+                            st.warning("I couldn't match any product in your shop catalog. Add the product in Shop Catalog or try again.")
+                    else:
+                        st.session_state.sale_cart = result["cart"]
+                        extra = (" Price missing for: " + ", ".join(result.get("missing_price",[])) + ".") if result.get("missing_price") else ""
+                        if result.get("missing_price"):
+                            st.warning("Order understood. Some items need prices: " + ", ".join(result["missing_price"]) + ". Set their real prices before confirming the sale.")
+                        else:
+                            st.success("Order understood. Prices were loaded from your shop catalog.")
                 except Exception:
                     st.error("I couldn't build the cart. Please check the product names and quantities.")
         with c2:
@@ -295,19 +302,68 @@ elif page == "Smart Sale":
                 st.session_state.sale_audio_key = None
                 st.session_state.sale_voice_understood = False
                 st.session_state.sale_voice_notice = ""
+                st.session_state.sale_order_items = []
                 st.rerun()
-        if st.session_state.sale_cart:
-            st.markdown("### 2 · Review cart")
-            for item in st.session_state.sale_cart:
-                a, b, c, d = st.columns([3, 1, 1.4, .8])
-                with a: st.write(item["name"])
-                with b: st.write(f"× {item['quantity']:g}")
-                with c: st.write(f"Rs. {item['unit_price']:,.2f}")
-                with d: st.write(f"Rs. {item['subtotal']:,.2f}")
-            from cart_tools import calculate_total
-            total = calculate_total(st.session_state.sale_cart)
-            st.markdown(f"<div class='premium-card'><div class='eyebrow'>Deterministic total</div><div class='big-number'>Rs. {total:,.2f}</div><div class='muted'>Calculated by Python from database prices.</div></div>", unsafe_allow_html=True)
-            edit = st.text_input("Edit current cart", placeholder="Tissue 3 kar do", key="cart_edit")
+        order_items = st.session_state.get("sale_order_items", [])
+        if order_items:
+            st.markdown("### 2 · Review order")
+            st.caption("Every requested item stays visible. Price and stock are checked from your shop database before confirmation.")
+            blocked = False
+            for entry in order_items:
+                product = entry.get("product") or {}
+                pid = int(product.get("id"))
+                product = get_product_by_id(pid, business_id) or product
+                name = product.get("name", "Unknown product")
+                qty = float(entry.get("quantity") or 0)
+                price = product.get("price")
+                stock = float(product.get("stock_quantity") or 0)
+                unit = product.get("unit") or "unit"
+                price_missing = price is None
+                out = stock <= 0
+                insufficient = stock < qty
+                status = "Price not set" if price_missing else ("Out of stock" if out else ("Not enough stock" if insufficient else "In stock"))
+                status_class = "sale-item-warn" if (price_missing or out or insufficient) else "sale-item-good"
+                if price_missing or out or insufficient: blocked = True
+                left, mid, right = st.columns([2.4, 1.15, 1.65])
+                with left:
+                    st.markdown(f"<div class='sale-item-card'><div class='sale-item-name'>{name}</div><div class='sale-item-meta'>Requested × {qty:g} · {unit}</div></div>", unsafe_allow_html=True)
+                with mid:
+                    if price_missing:
+                        new_price = st.number_input(f"Price · {name}", min_value=0.0, value=0.0, step=1.0, key=f"quick_price_{pid}", label_visibility="collapsed")
+                        if st.button("Save price", key=f"save_quick_price_{pid}", use_container_width=True):
+                            try:
+                                set_product_price(pid, new_price, business_id)
+                                log_activity("Product price updated", f"{name} · Rs. {new_price:,.2f}", st.session_state.user["name"], business_id)
+                                st.success("Price saved")
+                                st.rerun()
+                            except Exception:
+                                st.error("Price could not be saved. Enter a valid price.")
+                    else:
+                        st.markdown(f"<div class='sale-price-box'><span>PRICE</span><strong>Rs. {float(price):,.2f}</strong></div>", unsafe_allow_html=True)
+                        if st.button("Edit price", key=f"edit_quick_price_{pid}", use_container_width=True):
+                            st.session_state[f"show_price_editor_{pid}"] = True
+                        if st.session_state.get(f"show_price_editor_{pid}"):
+                            edited_price = st.number_input("New price", min_value=0.0, value=float(price), step=1.0, key=f"quick_edit_price_{pid}")
+                            if st.button("Save", key=f"save_existing_price_{pid}", use_container_width=True):
+                                try:
+                                    set_product_price(pid, edited_price, business_id)
+                                    st.session_state[f"show_price_editor_{pid}"] = False
+                                    log_activity("Product price updated", f"{name} · Rs. {edited_price:,.2f}", st.session_state.user["name"], business_id)
+                                    st.rerun()
+                                except Exception:
+                                    st.error("Price could not be saved.")
+                with right:
+                    st.markdown(f"<div class='sale-status-box {status_class}'><span>STOCK</span><strong>{stock:g} {unit}</strong><em>{status}</em></div>", unsafe_allow_html=True)
+            if blocked:
+                st.warning("Sale is not ready yet. Set missing prices and make sure requested quantities are in stock. Business Brain will not invent a price or sell more than available stock.")
+
+            if st.session_state.sale_cart:
+                from cart_tools import calculate_total
+                total = calculate_total(st.session_state.sale_cart)
+                st.markdown(f"<div class='premium-card'><div class='eyebrow'>Deterministic total</div><div class='big-number'>Rs. {total:,.2f}</div><div class='muted'>Calculated by Python from the saved shop prices.</div></div>", unsafe_allow_html=True)
+            else:
+                total = 0.0
+            edit = st.text_input("Edit current order", placeholder="Tissue 3 kar do", key="cart_edit")
             if st.button("Apply Edit", use_container_width=True) and edit.strip():
                 try:
                     edited = apply_cart_edit(st.session_state.sale_cart, edit, business_id)
@@ -318,7 +374,7 @@ elif page == "Smart Sale":
                         st.rerun()
                 except Exception:
                     st.error("I couldn't apply that cart edit. Please try a quantity such as 'Tissue 3 kar do'.")
-            if st.button("Confirm Sale", type="primary", use_container_width=True):
+            if st.button("Confirm Sale", type="primary", use_container_width=True, disabled=(not st.session_state.sale_cart or bool(st.session_state.get("sale_missing_price")) or any((float((x.get("product") or {}).get("stock_quantity") or 0) < float(x.get("quantity") or 0)) for x in st.session_state.get("sale_order_items", [])))):
                 try:
                     import uuid
                     ref = f"BB-{uuid.uuid4().hex[:8].upper()}"

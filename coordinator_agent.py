@@ -12,7 +12,9 @@ def _fallback_route(text: str):
         return "operations"
     if any(x in q for x in ["policy", "refund", "procedure", "process", "rule"]):
         return "knowledge"
-    if any(x in q for x in ["pepsi", "tissue", "surf", "flour", "sale", "sell", "buy", "chahiye"]):
+    if any(x in q for x in ["pepsi", "tissue", "surf", "flour", "papad", "nimko", "oil", "sooji", "سوجی", "پاپڑ", "نمکو", "آئل", "آئل", "تیل", "sale", "sell", "buy", "chahiye"]):
+        return "sale"
+    if any(x in q.split() for x in ["ایک", "اک", "دو", "تین", "چار", "پانچ", "چھ", "سات", "آٹھ", "آٹھ", "نو", "دس", "ek", "aik", "do", "teen", "tin", "char", "chaar", "paanch", "che", "chay", "saat", "aath", "nau", "das"]):
         return "sale"
     return "unknown"
 
