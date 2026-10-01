@@ -56,6 +56,56 @@ def init_db():
         id INTEGER PRIMARY KEY AUTOINCREMENT, business_id INTEGER NOT NULL DEFAULT 1, action TEXT NOT NULL DEFAULT '',
         details TEXT DEFAULT '', created_at TEXT DEFAULT ''
     );
+    CREATE TABLE IF NOT EXISTS products (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, business_id INTEGER NOT NULL DEFAULT 1,
+        name TEXT NOT NULL, aliases TEXT DEFAULT '', price REAL, stock_quantity REAL NOT NULL DEFAULT 0,
+        minimum_stock REAL NOT NULL DEFAULT 0, unit TEXT DEFAULT 'unit', active INTEGER NOT NULL DEFAULT 1,
+        created_at TEXT DEFAULT '', updated_at TEXT DEFAULT '',
+        UNIQUE(business_id, name)
+    );
+    CREATE TABLE IF NOT EXISTS suppliers (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, business_id INTEGER NOT NULL DEFAULT 1,
+        name TEXT NOT NULL, contact TEXT DEFAULT '', active INTEGER NOT NULL DEFAULT 1,
+        created_at TEXT DEFAULT '', updated_at TEXT DEFAULT '',
+        UNIQUE(business_id, name)
+    );
+    CREATE TABLE IF NOT EXISTS supplier_products (
+        supplier_id INTEGER NOT NULL, product_id INTEGER NOT NULL,
+        supplier_product_name TEXT DEFAULT '', supplier_price REAL,
+        PRIMARY KEY (supplier_id, product_id),
+        FOREIGN KEY (supplier_id) REFERENCES suppliers(id) ON DELETE CASCADE,
+        FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE
+    );
+    CREATE TABLE IF NOT EXISTS sales (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, business_id INTEGER NOT NULL DEFAULT 1,
+        transaction_ref TEXT NOT NULL UNIQUE, total REAL NOT NULL DEFAULT 0,
+        status TEXT NOT NULL DEFAULT 'Confirmed', created_by INTEGER DEFAULT 0, created_at TEXT DEFAULT ''
+    );
+    CREATE TABLE IF NOT EXISTS sale_items (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, sale_id INTEGER NOT NULL, product_id INTEGER NOT NULL,
+        quantity REAL NOT NULL, unit_price REAL NOT NULL, subtotal REAL NOT NULL,
+        FOREIGN KEY (sale_id) REFERENCES sales(id) ON DELETE CASCADE,
+        FOREIGN KEY (product_id) REFERENCES products(id)
+    );
+    CREATE TABLE IF NOT EXISTS supplier_orders (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, business_id INTEGER NOT NULL DEFAULT 1,
+        supplier_id INTEGER NOT NULL, status TEXT NOT NULL DEFAULT 'Draft',
+        created_by INTEGER DEFAULT 0, approved_by INTEGER DEFAULT 0,
+        created_at TEXT DEFAULT '', updated_at TEXT DEFAULT '',
+        FOREIGN KEY (supplier_id) REFERENCES suppliers(id)
+    );
+    CREATE TABLE IF NOT EXISTS supplier_order_items (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, supplier_order_id INTEGER NOT NULL, product_id INTEGER NOT NULL,
+        quantity REAL NOT NULL, unit_price REAL,
+        FOREIGN KEY (supplier_order_id) REFERENCES supplier_orders(id) ON DELETE CASCADE,
+        FOREIGN KEY (product_id) REFERENCES products(id)
+    );
+    CREATE TABLE IF NOT EXISTS receipt_verifications (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, business_id INTEGER NOT NULL DEFAULT 1, sale_id INTEGER,
+        status TEXT NOT NULL DEFAULT 'Needs Review', extracted_receipt_json TEXT DEFAULT '{}',
+        mismatches_json TEXT DEFAULT '[]', created_by INTEGER DEFAULT 0, created_at TEXT DEFAULT '',
+        FOREIGN KEY (sale_id) REFERENCES sales(id)
+    );
     """)
 
     # Migrate older MVP databases created before the final schema.
@@ -101,6 +151,7 @@ def seed_demo_data():
     existing = c.execute("SELECT COUNT(*) FROM businesses").fetchone()[0]
     if existing:
         c.close()
+        seed_operational_data()
         return
 
     now = datetime.now().isoformat(timespec="seconds")
@@ -229,6 +280,7 @@ def seed_demo_data():
 
     c.commit()
     c.close()
+    seed_operational_data()
 
 def ensure_demo_users():
     """Ensure the MVP demo accounts exist after migrating an older database."""
@@ -572,3 +624,106 @@ def get_activity(limit=20):
     rows=c.execute("SELECT * FROM activity WHERE business_id=1 ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
     c.close()
     return [dict(r) for r in rows]
+
+
+def seed_operational_data():
+    """Idempotently add small demo products/suppliers for operational workflows."""
+    c = _conn()
+    business_id = 1
+    now = datetime.now().isoformat(timespec="seconds")
+    products = [
+        ("Pepsi", "pepsi,cola", 100.0, 25.0, 10.0, "unit"),
+        ("Tissue", "tissue,tissues", 80.0, 30.0, 10.0, "pack"),
+        ("Surf", "surf,washing powder", 350.0, 12.0, 5.0, "pack"),
+        ("Flour", "flour,atta", 180.0, 8.0, 10.0, "kg"),
+    ]
+    for name, aliases, price, stock, minimum, unit in products:
+        c.execute("""INSERT OR IGNORE INTO products
+            (business_id,name,aliases,price,stock_quantity,minimum_stock,unit,active,created_at,updated_at)
+            VALUES (?,?,?,?,?,?,?,1,?,?)""",
+            (business_id, name, aliases, price, stock, minimum, unit, now, now))
+
+    suppliers = [
+        ("ABC Distributor", "0300-0000000"),
+        ("City Wholesale", "0311-0000000"),
+    ]
+    for name, contact in suppliers:
+        c.execute("""INSERT OR IGNORE INTO suppliers
+            (business_id,name,contact,active,created_at,updated_at)
+            VALUES (?,?,?,1,?,?)""", (business_id, name, contact, now, now))
+
+    abc_id = c.execute("SELECT id FROM suppliers WHERE business_id=? AND name=?", (business_id, "ABC Distributor")).fetchone()[0]
+    city_id = c.execute("SELECT id FROM suppliers WHERE business_id=? AND name=?", (business_id, "City Wholesale")).fetchone()[0]
+    flour_id = c.execute("SELECT id FROM products WHERE business_id=? AND name=?", (business_id, "Flour")).fetchone()[0]
+    tissue_id = c.execute("SELECT id FROM products WHERE business_id=? AND name=?", (business_id, "Tissue")).fetchone()[0]
+    surf_id = c.execute("SELECT id FROM products WHERE business_id=? AND name=?", (business_id, "Surf")).fetchone()[0]
+
+    c.execute("INSERT OR IGNORE INTO supplier_products (supplier_id,product_id,supplier_product_name,supplier_price) VALUES (?,?,?,?)", (abc_id, flour_id, "Flour", 170.0))
+    c.execute("INSERT OR IGNORE INTO supplier_products (supplier_id,product_id,supplier_product_name,supplier_price) VALUES (?,?,?,?)", (city_id, tissue_id, "Tissue", 72.0))
+    c.execute("INSERT OR IGNORE INTO supplier_products (supplier_id,product_id,supplier_product_name,supplier_price) VALUES (?,?,?,?)", (city_id, surf_id, "Surf", 320.0))
+    c.commit()
+    c.close()
+
+
+def find_product(query, business_id=1):
+    q = (query or "").strip().lower()
+    if not q:
+        return None
+    c = _conn()
+    rows = c.execute("SELECT * FROM products WHERE business_id=? AND active=1", (business_id,)).fetchall()
+    c.close()
+    for row in rows:
+        aliases = [a.strip().lower() for a in (row["aliases"] or "").split(",") if a.strip()]
+        if q == row["name"].lower() or q in aliases:
+            return dict(row)
+    for row in rows:
+        if q in row["name"].lower() or any(q in a for a in [a.strip().lower() for a in (row["aliases"] or "").split(",") if a.strip()]):
+            return dict(row)
+    return None
+
+
+def list_products(business_id=1):
+    c = _conn(); rows = c.execute("SELECT * FROM products WHERE business_id=? AND active=1 ORDER BY name", (business_id,)).fetchall(); c.close(); return [dict(r) for r in rows]
+
+
+def get_product_by_id(product_id, business_id=1):
+    c = _conn(); row = c.execute("SELECT * FROM products WHERE id=? AND business_id=?", (product_id, business_id)).fetchone(); c.close(); return dict(row) if row else None
+
+
+def find_supplier(name, business_id=1):
+    q = (name or "").strip().lower()
+    if not q: return None
+    c = _conn(); row = c.execute("SELECT * FROM suppliers WHERE business_id=? AND active=1 AND lower(name)=?", (business_id, q)).fetchone()
+    if not row: row = c.execute("SELECT * FROM suppliers WHERE business_id=? AND active=1 AND lower(name) LIKE ? ORDER BY name LIMIT 1", (business_id, f"%{q}%")).fetchone()
+    c.close(); return dict(row) if row else None
+
+
+def find_supplier_for_product(product_id, business_id=1):
+    c = _conn(); row = c.execute("""SELECT s.*, sp.supplier_price FROM suppliers s
+        JOIN supplier_products sp ON sp.supplier_id=s.id
+        WHERE s.business_id=? AND s.active=1 AND sp.product_id=? ORDER BY s.name LIMIT 1""", (business_id, product_id)).fetchone(); c.close(); return dict(row) if row else None
+
+
+def create_sale(transaction_ref, total, created_by=0, status="Confirmed", business_id=1):
+    c = _conn(); now=datetime.now().isoformat(timespec="seconds")
+    cur=c.execute("INSERT INTO sales (business_id,transaction_ref,total,status,created_by,created_at) VALUES (?,?,?,?,?,?)", (business_id,transaction_ref,total,status,created_by,now)); sale_id=cur.lastrowid; c.commit(); c.close(); return sale_id
+
+
+def create_sale_items(sale_id, items, business_id=1):
+    c=_conn()
+    for item in items:
+        c.execute("INSERT INTO sale_items (sale_id,product_id,quantity,unit_price,subtotal) VALUES (?,?,?,?,?)", (sale_id,item["product_id"],item["quantity"],item["unit_price"],item["subtotal"]))
+        c.execute("UPDATE products SET stock_quantity=stock_quantity-?, updated_at=? WHERE id=? AND business_id=?", (item["quantity"],datetime.now().isoformat(timespec="seconds"),item["product_id"],business_id))
+    c.commit(); c.close()
+
+
+def create_supplier_order(supplier_id, items, created_by=0, business_id=1):
+    c=_conn(); now=datetime.now().isoformat(timespec="seconds")
+    cur=c.execute("INSERT INTO supplier_orders (business_id,supplier_id,status,created_by,created_at,updated_at) VALUES (?,?,?,?,?,?)", (business_id,supplier_id,"Draft",created_by,now,now)); order_id=cur.lastrowid
+    for item in items: c.execute("INSERT INTO supplier_order_items (supplier_order_id,product_id,quantity,unit_price) VALUES (?,?,?,?)", (order_id,item["product_id"],item["quantity"],item.get("unit_price")))
+    c.commit(); c.close(); return order_id
+
+
+def save_receipt_verification(sale_id, status, extracted_receipt, mismatches, created_by=0, business_id=1):
+    c=_conn(); now=datetime.now().isoformat(timespec="seconds")
+    cur=c.execute("INSERT INTO receipt_verifications (business_id,sale_id,status,extracted_receipt_json,mismatches_json,created_by,created_at) VALUES (?,?,?,?,?,?,?)", (business_id,sale_id,status,json.dumps(extracted_receipt or {}),json.dumps(mismatches or []),created_by,now)); rid=cur.lastrowid; c.commit(); c.close(); return rid
