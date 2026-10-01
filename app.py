@@ -4,18 +4,16 @@ import streamlit as st
 from dotenv import load_dotenv
 
 from database import (
-    init_db, seed_demo_data, seed_operational_data, get_business, list_processes, list_knowledge, get_activity,
+    init_db, seed_demo_data, get_business, list_processes, list_knowledge, get_activity,
     get_process, create_process, update_process, delete_process, get_process_versions, restore_process_version,
     authenticate_user, list_users, create_user, get_user, update_user, reset_user_password, update_business, log_activity, ensure_demo_users,
-    get_daily_operations, create_sale, create_sale_items, get_sale, approve_supplier_order, list_supplier_orders,
-    list_products, create_product, update_product, bulk_add_products, set_product_price,
-    add_business_memory, list_business_memory, delete_business_memory,
+    get_daily_operations, list_products, update_product, bulk_add_products, get_sale, list_supplier_orders, approve_supplier_order,
+    save_confirmed_sale, find_supplier, find_supplier_for_product, create_supplier_order,
 )
 from agent import generate_sop_from_inputs, answer_business_question, transcribe_audio_to_text
 from coordinator_agent import route_request
-from smart_sale_agent import build_cart, apply_cart_edit
-from operations_agent import low_stock_items, supplier_draft, classify_operation_request
-from knowledge_agent import answer as knowledge_answer
+from smart_sale_agent import build_cart
+from operations_agent import low_stock_items, supplier_draft
 from receipt_agent import verify_receipt
 from rag import ingest_knowledge_file, edit_knowledge_item, remove_knowledge_item, detect_knowledge_contradictions, index_process, bootstrap_index
 from ui import inject_css, sidebar, page_header, stat_card, empty_state, source_card
@@ -24,7 +22,6 @@ load_dotenv()
 init_db()
 if os.getenv("SEED_DEMO_DATA", "true").lower() == "true":
     seed_demo_data()
-    seed_operational_data()
     ensure_demo_users()
 bootstrap_index()
 
@@ -44,28 +41,17 @@ def can(action):
 def current_business_id():
     return int((st.session_state.get("user") or {}).get("business_id") or 1)
 
-
 def receipt_download_text(sale):
-    lines = [
-        "BUSINESS BRAIN — SALE RECEIPT",
-        "=" * 38,
-        f"Sale Reference: {sale.get('transaction_ref','')}",
-        f"Sale ID: #{sale.get('id','')}",
-        f"Date: {sale.get('created_at','')}",
-        "",
-    ]
-    for item in sale.get("items", []):
-        qty=float(item.get("quantity",0) or 0)
-        price=float(item.get("unit_price",0) or 0)
-        subtotal=float(item.get("subtotal",0) or 0)
-        lines.append(f"{item.get('name','Product')}  x {qty:g}")
-        lines.append(f"  Rs. {price:,.2f} each = Rs. {subtotal:,.2f}")
-    lines += ["", "=" * 38, f"TOTAL: Rs. {float(sale.get('total',0) or 0):,.2f}", "", "Thank you."]
+    lines=["BUSINESS BRAIN — SALE RECEIPT","="*38,f"Sale Reference: {sale.get('transaction_ref','')}",f"Sale ID: #{sale.get('id','')}",f"Date: {sale.get('created_at','')}",""]
+    for item in sale.get("items",[]):
+        qty=float(item.get("quantity",0) or 0); price=float(item.get("unit_price",0) or 0); subtotal=float(item.get("subtotal",0) or 0)
+        lines += [f"{item.get('name','Product')}  x {qty:g}",f"  Rs. {price:,.2f} each = Rs. {subtotal:,.2f}"]
+    lines += ["","="*38,f"TOTAL: Rs. {float(sale.get('total',0) or 0):,.2f}","","Thank you."]
     return "\n".join(lines)
 
-
 def is_manager_or_owner():
-    return (st.session_state.get("user") or {}).get("role") in {"Owner", "Manager"}
+    return (st.session_state.get("user") or {}).get("role") in {"Owner","Manager"}
+
 
 def _as_list(value):
     if value is None: return []
@@ -174,9 +160,8 @@ if not st.session_state.user:
             st.rerun()
         else:
             st.error("Invalid username or password.")
-    if os.getenv("SEED_DEMO_DATA", "true").lower() == "true":
-        st.info("Demo login: admin / BusinessBrain123!  ·  manager / BusinessBrain123!  ·  employee / BusinessBrain123!")
-        st.caption("Demo credentials are for testing only. Change them before production use.")
+    st.info("Demo login: admin / BusinessBrain123!  ·  manager / BusinessBrain123!  ·  employee / BusinessBrain123!")
+    st.caption("Demo credentials are for testing only. Change them before production use.")
     st.markdown("</div>", unsafe_allow_html=True)
     st.stop()
 
@@ -187,8 +172,8 @@ if "draft_sop" not in st.session_state: st.session_state.draft_sop = None
 if "draft_sources" not in st.session_state: st.session_state.draft_sources = []
 if "notice" not in st.session_state: st.session_state.notice = None
 if "sale_cart" not in st.session_state: st.session_state.sale_cart = []
-if "sale_last_id" not in st.session_state: st.session_state.sale_last_id = None
 if "sale_input_value" not in st.session_state: st.session_state.sale_input_value = ""
+if "sale_last_id" not in st.session_state: st.session_state.sale_last_id = None
 if "sale_missing_price" not in st.session_state: st.session_state.sale_missing_price = []
 
 sidebar(business)
@@ -207,42 +192,241 @@ page = st.session_state.page
 
 # ---------- Dashboard ----------
 if page == "Dashboard":
-    business_id=current_business_id()
-    ops=get_daily_operations(business_id)
-    page_header("Good morning 👋", "A quick view of today’s sales, stock, and pending actions.", "Home")
+    page_header("Good morning 👋", "Your business knowledge, organized and ready to work.", "Dashboard")
+    processes=list_processes(); knowledge=list_knowledge(); activity=get_activity(6)
     cols=st.columns(4)
-    stats=[
-        ("Today’s sales",f"Rs. {ops['sales_total']:,.0f}",f"{ops['sales_count']} sales"),
-        ("Orders",ops["sales_count"],"Confirmed today"),
-        ("Low stock",len(ops["low_stock"]),"Needs attention"),
-        ("Pending",ops["pending_supplier_orders"],"Supplier actions"),
-    ]
+    stats=[("Processes",len(processes),"Documented workflows"),("Knowledge items",len(knowledge),"Sources in your Brain"),("Indexed",sum(1 for x in knowledge if x["status"]=="Indexed"),"Ready for retrieval"),("Activity",len(get_activity(1000)),"Workspace events")]
     for col,(label,value,sub) in zip(cols,stats):
         with col: stat_card(label,value,sub)
     st.markdown("<div class='section-gap'></div>",unsafe_allow_html=True)
-    st.markdown("### Quick actions")
-    qcols=st.columns(3)
-    actions=[("＋","New Sale","Speak or type a customer order.","Smart Sale"),("▦","Check Inventory","See products, prices and stock.","Inventory"),("🧾","Verify Receipt","Check a receipt against a confirmed sale.","Smart Sale")]
-    for c,(icon,title,desc,target) in zip(qcols,actions):
-        with c:
-            st.markdown(f"<div class='action-card'><div class='action-icon'>{icon}</div><div class='action-title'>{title}</div><div class='action-desc'>{desc}</div></div>",unsafe_allow_html=True)
-            if st.button(title,key=f"home_{target}_{title}",use_container_width=True): st.session_state.page=target; st.rerun()
-    st.markdown("<div class='section-gap'></div>",unsafe_allow_html=True)
-    left,right=st.columns([1.25,1],gap="large")
+    left,right=st.columns([1.65,1],gap="large")
     with left:
-        st.markdown("### Needs attention")
-        if not ops["low_stock"] and not ops["pending_supplier_orders"]:
-            st.success("Nothing urgent right now.")
-        for item in ops["low_stock"][:5]:
-            stock=float(item.get("stock_quantity",item.get("stock",0)) or 0); minimum=float(item.get("minimum_stock",0) or 0); unit=item.get("unit") or "unit"
-            st.markdown(f"<div class='premium-card' style='margin:.45rem 0'><span class='status-pill'>LOW STOCK</span><br><b>{item.get('name','Unknown product')}</b><div class='muted'>{stock:g} {unit} available · minimum {minimum:g}</div></div>",unsafe_allow_html=True)
-        if ops["pending_supplier_orders"]:
-            st.info(f"{ops['pending_supplier_orders']} supplier order(s) are waiting for review.")
+        st.markdown("### Quick actions")
+        qcols=st.columns(3)
+        actions=[("＋","Record Process","Turn how your team works into an SOP.","Record Process",can("record")),("✦","Add Knowledge","Teach Business Brain something new.","Knowledge",can("knowledge")),("⌕","Ask Brain","Get an evidence-backed answer.","Ask Brain",True)]
+        for c,(icon,title,desc,target,allowed) in zip(qcols,actions):
+            with c:
+                st.markdown(f"<div class='action-card'><div class='action-icon'>{icon}</div><div class='action-title'>{title}</div><div class='action-desc'>{desc}</div></div>",unsafe_allow_html=True)
+                if allowed:
+                    if st.button(f"Open {title}",key=f"qa_{target}",use_container_width=True): st.session_state.page=target; st.rerun()
+                else: st.caption("Manager or Owner access")
+        st.markdown("<div class='section-gap'></div>",unsafe_allow_html=True)
+        st.markdown("### Recent processes")
+        if not processes: empty_state("No processes yet","Record your first workflow to start teaching your Business Brain.")
+        for p in processes[:5]:
+            c1,c2,c3=st.columns([4,1.5,1])
+            with c1: st.markdown(f"**{p['name']}**"); st.caption(p["description"] or "Structured business workflow")
+            with c2: st.caption(p["category"])
+            with c3:
+                if st.button("Open",key=f"open_p_{p['id']}"): st.session_state.selected_process=p["id"]; st.session_state.page="Process detail"; st.rerun()
     with right:
-        st.markdown("### Recent sales")
-        if not ops["recent_sales"]: empty_state("No sales yet","Your confirmed sales will appear here.")
-        for sale in ops["recent_sales"][:5]:
-            st.markdown(f"<div class='premium-card' style='margin:.45rem 0'><b>{sale['transaction_ref']}</b><div class='muted'>Rs. {sale['total']:,.2f} · {sale['created_at']}</div></div>",unsafe_allow_html=True)
+        st.markdown("### Recent activity")
+        if not activity: empty_state("Nothing here yet","Your workspace activity will appear here.")
+        for item in activity:
+            st.markdown(f"<div class='activity-row'><div class='activity-dot'></div><div><b>{item['action']}</b><div class='muted'>{item['details']}</div><div class='tiny'>{item['created_at']}</div></div></div>",unsafe_allow_html=True)
+
+# ---------- Record Process ----------
+elif page == "Record Process":
+    if not can("record"):
+        st.warning("Your Employee role is view-only. Ask a Manager or Owner to record a process."); st.stop()
+    page_header("Record a process","Teach Business Brain how your team actually gets work done.","Process Recorder")
+    st.markdown("<div class='info-banner'><b>Two easy ways to record.</b> Type the process, upload evidence, or record your explanation by voice. Nothing is saved until you approve the SOP.</div>",unsafe_allow_html=True)
+    tab_text,tab_voice=st.tabs(["Text / files","🎙️ Voice-to-SOP"])
+    with tab_text:
+        with st.form("process_recorder"):
+            title_hint=st.text_input("Process name (optional)",placeholder="e.g. Customer Appointment Booking")
+            description=st.text_area("Describe the process",height=220,placeholder="Explain what normally happens from trigger to final outcome. Roman Urdu is fine.")
+            uploads=st.file_uploader("Supporting files",type=["pdf","docx","txt","md","csv","xlsx","png","jpg","jpeg","webp"],accept_multiple_files=True)
+            submitted=st.form_submit_button("Generate SOP",type="primary",use_container_width=True)
+        if submitted:
+            if not description.strip() and not uploads: st.error("Add a process description or at least one supporting file.")
+            else:
+                with st.spinner("Analyzing your process and structuring the SOP…"):
+                    result=generate_sop_from_inputs(title_hint,description,uploads)
+                if result["ok"]:
+                    st.session_state.draft_sop=result["sop"]; st.session_state.draft_sources=result.get("sources",[]); st.success("Draft SOP generated. Review it before saving."); st.rerun()
+                else: st.error(result["error"])
+    with tab_voice:
+        st.markdown("Record yourself explaining the process naturally. Gemini will transcribe it and turn it into the same editable SOP.")
+        audio=st.audio_input("Record your process explanation",key="process_voice")
+        voice_title=st.text_input("Process name (optional)",key="voice_title",placeholder="e.g. Customer Appointment Booking")
+        if st.button("Turn voice into SOP",type="primary",disabled=audio is None,use_container_width=True):
+            try:
+                with st.spinner("Transcribing your recording…"): transcript=transcribe_audio_to_text(audio)
+                with st.spinner("Turning the transcript into an editable SOP…"):
+                    result=generate_sop_from_inputs(voice_title,transcript,[])
+                if result["ok"]:
+                    st.session_state.voice_transcript=transcript; st.session_state.draft_sop=result["sop"]; st.session_state.draft_sources=["Voice recording"]; st.success("Voice converted to an SOP draft. Review it below."); st.rerun()
+                else: st.error(result["error"])
+            except Exception as e: st.error(f"Voice-to-SOP failed: {e}")
+        if st.session_state.get("voice_transcript"):
+            with st.expander("View transcript"): st.write(st.session_state.voice_transcript)
+
+    if st.session_state.draft_sop:
+        st.markdown("<div class='section-gap'></div>",unsafe_allow_html=True); st.markdown("### Review & edit")
+        sop=st.session_state.draft_sop or {}; required_inputs=_as_list(sop.get("required_inputs")); roles_list=_as_list(sop.get("roles")); decisions_list=_as_list(sop.get("decisions")); exceptions_list=_as_list(sop.get("exceptions")); tags_list=_as_list(sop.get("tags")); steps_list=_as_steps(sop.get("steps"))
+        with st.form("sop_editor"):
+            name=st.text_input("Process name",value=sop.get("process_name","")); category=st.text_input("Category",value=sop.get("category","Operations")); purpose=st.text_area("Purpose",value=sop.get("purpose","")); trigger=st.text_input("Trigger",value=sop.get("trigger","")); inputs=st.text_area("Required inputs",value="\n".join(required_inputs)); roles=st.text_area("People / roles",value="\n".join(roles_list)); steps=st.text_area("Step-by-step workflow",value="\n".join([f"{i+1}. {s.get('action','')}"+(f" — {s.get('notes','')}" if s.get('notes') else "") for i,s in enumerate(steps_list)]),height=260); decisions=st.text_area("Decisions / conditions",value="\n".join(decisions_list)); exceptions=st.text_area("Exceptions / warnings",value="\n".join(exceptions_list)); output=st.text_area("Expected output",value=sop.get("output","")); tags=st.text_input("Tags",value=", ".join(tags_list))
+            save=st.form_submit_button("Save to Business Brain",type="primary",use_container_width=True)
+        if save:
+            process={"name":name.strip() or "Untitled Process","description":purpose.strip(),"category":category.strip() or "Operations","owner":st.session_state.user["name"],"status":"Active","trigger":trigger.strip(),"inputs":[x.strip() for x in inputs.splitlines() if x.strip()],"roles":[x.strip() for x in roles.splitlines() if x.strip()],"steps":[{"action":x.strip()} for x in steps.splitlines() if x.strip()],"decisions":[x.strip() for x in decisions.splitlines() if x.strip()],"exceptions":[x.strip() for x in exceptions.splitlines() if x.strip()],"output":output.strip(),"tags":[x.strip() for x in tags.split(",") if x.strip()]}
+            pid=_save_process_from_editor(process); st.session_state.draft_sop=None; st.session_state.voice_transcript=None; st.session_state.notice="Process saved as version 1 and indexed."; st.session_state.page="Processes"; st.rerun()
+
+# ---------- Knowledge ----------
+elif page == "Knowledge":
+    page_header("Knowledge","Store policies, guides and business information.","Knowledge base")
+    tabs=st.tabs(["Add knowledge","Library"])
+    with tabs[0]:
+        if not can("knowledge"):
+            st.info("Employees can view knowledge and ask Brain, but only Managers and Owners can add it.")
+        else:
+            with st.form("knowledge_form"):
+                title=st.text_input("Title",placeholder="e.g. Customer Service Policy")
+                kind=st.selectbox("Type",["Policy","FAQ","Guide","Document","Product info","Note","Other"])
+                tags=st.text_input("Tags",placeholder="orders, customer-service")
+                text=st.text_area("Notes / text",height=180,placeholder="Paste useful business knowledge here.")
+                file=st.file_uploader("Or upload a file",type=["pdf","docx","txt","md","csv","xlsx","png","jpg","jpeg","webp"])
+                save_k=st.form_submit_button("Add to Business Brain",type="primary",use_container_width=True)
+            if save_k:
+                if not title.strip(): st.error("Give this knowledge item a title.")
+                elif not text.strip() and not file: st.error("Add some text or upload a file.")
+                else:
+                    with st.spinner("Extracting, structuring and indexing…"):
+                        result=ingest_knowledge_file(title,kind,tags,file,text)
+                    if result.get("duplicate"):
+                        st.info("This knowledge item already exists in your Business Brain. Nothing new was added.")
+                    elif result.get("ok"):
+                        st.session_state.notice="Knowledge added and indexed successfully."
+                        st.rerun()
+                    else:
+                        st.error(result.get("error","Something went wrong while adding knowledge."))
+
+    with tabs[1]:
+        knowledge=list_knowledge()
+        conflicts=detect_knowledge_contradictions(knowledge)
+
+        if conflicts:
+            st.warning(f"⚠️ {len(conflicts)} possible information contradiction(s) detected. Review the affected knowledge items before relying on them.")
+            for conflict in conflicts:
+                st.markdown(
+                    f"**Possible conflict:** `{conflict['a_title']}` ↔ `{conflict['b_title']}`  \n"
+                    f"{conflict['reason']}"
+                )
+
+        if not knowledge:
+            empty_state("Your knowledge base is empty","Add policies, guides, FAQs and documents.")
+
+        for k in knowledge:
+            kid=k["id"]
+            edit_key=f"edit_knowledge_{kid}"
+            delete_key=f"confirm_delete_knowledge_{kid}"
+            with st.container(border=True):
+                a,b,c,d=st.columns([4,1.1,1.1,1.6])
+                with a:
+                    st.markdown(f"**{k['title']}**")
+                    st.caption(k["description"] or "Business knowledge source")
+                    if k["tags"]: st.caption(" · ".join(k["tags"]))
+                with b: st.caption(k["type"])
+                with c: st.caption(k["status"])
+                with d:
+                    x1,x2=st.columns(2)
+                    with x1:
+                        if st.button("Open",key=f"open_k_{kid}",use_container_width=True):
+                            st.session_state[f"view_knowledge_{kid}"]=True
+                            st.rerun()
+                    with x2:
+                        if can("edit"):
+                            if st.button("Edit",key=f"edit_btn_{kid}",use_container_width=True):
+                                st.session_state[edit_key]=True
+                                st.rerun()
+
+                if st.session_state.get(f"view_knowledge_{kid}"):
+                    st.markdown("#### Knowledge details")
+                    st.caption(f"Source: {k.get('source') or 'Manual note'} · Updated: {k.get('updated_at','')}")
+                    st.text_area("Saved content",value=k.get("content",""),height=260,key=f"view_content_{kid}",disabled=True)
+                    if st.button("Close",key=f"close_k_{kid}"):
+                        st.session_state.pop(f"view_knowledge_{kid}",None)
+                        st.rerun()
+
+                if st.session_state.get(edit_key) and can("edit"):
+                    st.markdown("#### Edit knowledge")
+                    with st.form(f"knowledge_edit_form_{kid}"):
+                        new_title=st.text_input("Title",value=k["title"])
+                        type_options=["Policy","FAQ","Guide","Document","Product info","Note","Other"]
+                        current_type=k.get("type","Document")
+                        new_kind=st.selectbox("Type",type_options,index=type_options.index(current_type) if current_type in type_options else 0)
+                        new_tags=st.text_input("Tags",value=", ".join(k.get("tags",[])))
+                        new_text=st.text_area("Content",value=k.get("content",""),height=260)
+                        save_edit=st.form_submit_button("Save changes",type="primary",use_container_width=True)
+                    if save_edit:
+                        result=edit_knowledge_item(kid,new_title,new_kind,new_tags,new_text)
+                        if result.get("duplicate"):
+                            st.warning(result["message"])
+                        elif result.get("ok"):
+                            st.session_state.notice=f"Knowledge '{new_title}' updated and re-indexed successfully."
+                            st.session_state.pop(edit_key,None)
+                            st.rerun()
+                        else:
+                            st.error(result.get("error","Knowledge could not be updated."))
+                    if st.button("Cancel edit",key=f"cancel_edit_{kid}"):
+                        st.session_state.pop(edit_key,None)
+                        st.rerun()
+
+                if can("edit"):
+                    if st.button("Delete",key=f"delete_btn_{kid}"):
+                        st.session_state[delete_key]=True
+                        st.rerun()
+                    if st.session_state.get(delete_key):
+                        st.error(
+                            f"Delete '{k['title']}' permanently? Its stored content and indexed search data will be removed."
+                        )
+                        y1,y2=st.columns(2)
+                        with y1:
+                            if st.button("Yes, delete knowledge",type="primary",key=f"yes_delete_{kid}",use_container_width=True):
+                                result=remove_knowledge_item(kid)
+                                if result.get("ok"):
+                                    st.session_state.pop(delete_key,None)
+                                    st.session_state.pop(edit_key,None)
+                                    st.session_state.pop(f"view_knowledge_{kid}",None)
+                                    st.session_state.notice=f"Knowledge '{result['title']}' deleted successfully."
+                                    st.rerun()
+                                else:
+                                    st.error(result.get("error","Knowledge could not be deleted."))
+                        with y2:
+                            if st.button("Cancel",key=f"cancel_delete_{kid}",use_container_width=True):
+                                st.session_state.pop(delete_key,None)
+                                st.rerun()
+
+# ---------- Ask Brain ----------
+elif page == "Ask Brain":
+    page_header("Ask Business Brain","Ask questions about how your business works. Answers are grounded in your stored knowledge.","AI workspace")
+    if not st.session_state.chat:
+        st.markdown("<div class='brain-hero'><div class='brain-mark'>✦</div><h2>Your business, remembered.</h2><p>Ask about processes, policies, responsibilities, requirements, or related documents.</p></div>",unsafe_allow_html=True)
+        st.markdown("### Suggested questions")
+        qs=["How does our order process work?","What information is required before creating a new order?","Who handles customer complaints?","What should I do after receiving a custom cake order?"]
+        qcols=st.columns(2)
+        for i,q in enumerate(qs):
+            with qcols[i%2]:
+                if st.button(q,key=f"suggest_{i}",use_container_width=True): st.session_state.pending_question=q; st.rerun()
+    for message in st.session_state.chat:
+        with st.chat_message(message["role"]):
+            st.markdown(message["content"])
+            if message.get("sources"):
+                st.markdown("**Sources**")
+                for source in message["sources"]: source_card(source)
+    pending=st.session_state.pop("pending_question",None); question=st.chat_input("Ask Business Brain…") or pending
+    if question:
+        st.session_state.chat.append({"role":"user","content":question})
+        with st.chat_message("user"): st.markdown(question)
+        with st.chat_message("assistant"):
+            with st.spinner("Searching your Business Brain…"): result=answer_business_question(question, conversation=st.session_state.chat)
+            if result["ok"]:
+                st.markdown(result["answer"])
+                if result["sources"]:
+                    st.markdown("**Sources**")
+                    for source in result["sources"]: source_card(source)
+                st.session_state.chat.append({"role":"assistant","content":result["answer"],"sources":result["sources"]})
+            else: st.error(result["error"]); st.session_state.chat.append({"role":"assistant","content":result["error"],"sources":[]})
 
 # ---------- Smart Sale ----------
 elif page == "Smart Sale":
@@ -489,81 +673,312 @@ elif page == "Inventory":
         except Exception:
             st.error("Products could not be added. Please try again.")
 
-# ---------- Inventory ----------
-elif page == "Inventory":
-    business_id = current_business_id()
-    page_header("Inventory", "Edit prices and stock directly here. You do not need to leave the page while taking an order.", "Shop Catalog")
-    products = list_products(business_id)
-    top1, top2 = st.columns([2.2, 1])
-    with top1:
-        search = st.text_input("Search products", placeholder="e.g. flour, papad, sugar", key="inventory_search")
-    with top2:
-        st.markdown("<div class='inventory-label' style='margin-top:1.9rem'>Catalog</div>", unsafe_allow_html=True)
-        st.markdown(f"<div class='inventory-meta'>{len(products)} active product(s)</div>", unsafe_allow_html=True)
-    if search.strip():
-        q = search.strip().lower()
-        products = [p for p in products if q in str(p.get("name","")).lower() or q in str(p.get("aliases","")).lower()]
-    if not products:
-        empty_state("No products found", "Add a product or change your search.")
+
+# ---------- Process Library ----------
+elif page == "Processes":
+    page_header("Processes","View and manage how work gets done.","Process library")
+    processes=list_processes()
+    total=len(processes); active=sum(1 for p in processes if p["status"]=="Active"); cats=len(set(p["category"] for p in processes)); recent=sum(1 for p in processes if p.get("updated_at","")[:10] >= __import__('datetime').datetime.now().strftime('%Y-%m-%d'))
+    m=st.columns(4); 
+    for col,(lab,val,sub) in zip(m,[("Total",total,"Documented processes"),("Active",active,"Currently in use"),("Categories",cats,"Process areas"),("Updated today",recent,"Recent changes")]):
+        with col: stat_card(lab,val,sub)
+    st.markdown("<div class='section-gap'></div>",unsafe_allow_html=True)
+    c1,c2=st.columns([2,1]);
+    with c1: search=st.text_input("Search processes",placeholder="Search by name, purpose or category",label_visibility="collapsed")
+    with c2: category=st.selectbox("Category",["All categories"]+sorted(set(p["category"] for p in processes)),label_visibility="collapsed")
+    filtered=[p for p in processes if (not search or search.lower() in (p["name"]+" "+p["description"]+" "+p["category"]).lower()) and (category=="All categories" or p["category"]==category)]
+    if not filtered: empty_state("No matching processes","Try a different search or category.")
+    for p in filtered:
+        with st.container(border=True):
+            a,b,c,d=st.columns([4,1.2,1.2,1])
+            with a: st.markdown(f"**{p['name']}**"); st.caption(p["description"] or "No description")
+            with b: st.caption(p["category"])
+            with c: st.caption(p["status"]); st.caption(p["updated_at"][:10])
+            with d:
+                if st.button("Open",key=f"view_{p['id']}"): st.session_state.selected_process=p["id"]; st.session_state.page="Process detail"; st.rerun()
+
+# ---------- Process Detail / Versioning ----------
+elif page == "Process detail":
+    p=get_process(st.session_state.get("selected_process"))
+    if not p: st.error("Process not found.")
     else:
-        for product in products:
-            stock = float(product.get("stock_quantity", 0) or 0)
-            minimum = float(product.get("minimum_stock", 0) or 0)
-            price = product.get("price")
-            unit = product.get("unit") or "unit"
-            if stock <= 0:
-                stock_class, stock_text = "stock-out", f"0 {unit} · Out of stock"
-            elif stock <= minimum:
-                stock_class, stock_text = "stock-low", f"{stock:g} {unit} · Low stock"
-            else:
-                stock_class, stock_text = "stock-good", f"{stock:g} {unit} · In stock"
-            with st.container(border=True):
-                st.markdown(f"<div class='inventory-title'>{product['name']}</div><div class='inventory-meta'>Current status: <span class='{stock_class}'>{stock_text}</span> · Minimum {minimum:g} {unit}</div>", unsafe_allow_html=True)
-                st.markdown("<div style='height:.55rem'></div>", unsafe_allow_html=True)
-                with st.form(f"inventory_edit_{product['id']}"):
-                    c1, c2, c3, c4 = st.columns([1.15, 1.15, 1, 1.05])
-                    with c1:
-                        st.markdown("<div class='inventory-label'>Selling price (Rs.)</div>", unsafe_allow_html=True)
-                        new_price = st.number_input("Selling price", min_value=0.0, step=1.0, value=float(price) if price is not None else 0.0, key=f"inv_price_{product['id']}", label_visibility="collapsed")
-                    with c2:
-                        st.markdown("<div class='inventory-label'>Current stock</div>", unsafe_allow_html=True)
-                        new_stock = st.number_input("Current stock", min_value=0.0, step=1.0, value=stock, key=f"inv_stock_{product['id']}", label_visibility="collapsed")
-                    with c3:
-                        st.markdown("<div class='inventory-label'>Unit</div>", unsafe_allow_html=True)
-                        units = ["unit","piece","pack","kg","liter"]
-                        current_unit = unit if unit in units else "unit"
-                        new_unit = st.selectbox("Unit", units, index=units.index(current_unit), key=f"inv_unit_{product['id']}", label_visibility="collapsed")
-                    with c4:
-                        st.markdown("<div class='inventory-label'>Minimum stock</div>", unsafe_allow_html=True)
-                        new_min = st.number_input("Minimum stock", min_value=0.0, step=1.0, value=minimum, key=f"inv_min_{product['id']}", label_visibility="collapsed")
-                    save = st.form_submit_button("Save changes", type="primary", use_container_width=True)
-                if save:
-                    try:
-                        update_product(product["id"], price=float(new_price), stock_quantity=float(new_stock), unit=new_unit, minimum_stock=float(new_min), business_id=business_id)
-                        log_activity("Product updated", f"{product['name']} · price Rs. {new_price:,.2f} · stock {new_stock:g} {new_unit}", st.session_state.user["name"], business_id)
-                        st.success(f"{product['name']} updated successfully.")
+        page_header(p["name"],p["description"],"Process")
+        versions=get_process_versions(p["id"])
+        st.caption(f"{p['category']} · {p['status']} · Owner: {p['owner']} · Updated {p['updated_at']} · Version {versions[0]['version'] if versions else 1}")
+        if can("edit"):
+            e1,e2=st.columns([1,1])
+            with e1:
+                if st.button("Edit process",type="primary",use_container_width=True): st.session_state.edit_process=True; st.rerun()
+            with e2:
+                if st.button("Delete process",use_container_width=True):
+                    st.session_state[f"confirm_delete_process_{p['id']}"] = True
+
+            process_delete_key = f"confirm_delete_process_{p['id']}"
+            if st.session_state.get(process_delete_key):
+                st.error(
+                    f"Delete '{p['name']}' permanently? This will remove the process, "
+                    "its version history, and its indexed search data. This cannot be undone."
+                )
+                d1,d2=st.columns(2)
+                with d1:
+                    if st.button("Yes, delete process",type="primary",use_container_width=True):
+                        process_name = p["name"]
+                        if delete_process(p["id"]):
+                            log_activity("Process deleted",f"{process_name} (ID {p['id']})",st.session_state.user["name"])
+                            st.session_state.pop(process_delete_key, None)
+                            st.session_state.pop("selected_process", None)
+                            st.session_state.pop("edit_process", None)
+                            st.session_state.notice = f"Process '{process_name}' deleted successfully."
+                            st.session_state.page = "Processes"
+                            st.rerun()
+                        else:
+                            st.error("The process could not be deleted.")
+                with d2:
+                    if st.button("Cancel",use_container_width=True):
+                        st.session_state.pop(process_delete_key, None)
                         st.rerun()
-                    except Exception:
-                        st.error("Product could not be updated. Please check the price and stock values.")
-    st.markdown("### Add products")
-    st.caption("Add one product per line. Business Brain will create the catalog records without inventing prices.")
-    with st.form("bulk_add_inventory"):
-        names = st.text_area("Product names", placeholder="Papad\nNimko\nBiscuits", height=100)
-        add = st.form_submit_button("Add products", use_container_width=True)
-    if add:
-        try:
-            result = bulk_add_products(names.splitlines(), business_id)
-            created = result.get("created", [])
-            existing = result.get("existing", [])
-            if created:
-                st.success(f"Added: {', '.join(created)}. Set their real prices above before selling.")
-            if existing:
-                st.info(f"Already in catalog: {', '.join(existing)}")
-            if not created and not existing:
-                st.warning("Enter at least one product name.")
-            st.rerun()
-        except Exception:
-            st.error("Products could not be added. Please try again.")
+        if st.session_state.get("edit_process"):
+            st.markdown("### Edit current version")
+            with st.form("edit_process_form"):
+                name=st.text_input("Process name",p["name"]); category=st.text_input("Category",p["category"]); purpose=st.text_area("Purpose",p["description"]); trigger=st.text_input("Trigger",p["trigger"]); inputs=st.text_area("Required inputs","\n".join(p["inputs"])); roles=st.text_area("People / roles","\n".join(p["roles"])); steps=st.text_area("Step-by-step workflow","\n".join([f"{i+1}. {x.get('action','')}" for i,x in enumerate(p["steps"])]),height=220); decisions=st.text_area("Decisions / conditions","\n".join(p["decisions"])); exceptions=st.text_area("Exceptions / warnings","\n".join(p["exceptions"])); output=st.text_area("Expected output",p["output"]); tags=st.text_input("Tags",", ".join(p["tags"])); note=st.text_input("Change note","Updated SOP")
+                save=st.form_submit_button("Save new version",type="primary")
+            if save:
+                updated={"name":name.strip(),"description":purpose.strip(),"category":category.strip() or "Operations","owner":p["owner"],"status":p["status"],"trigger":trigger.strip(),"inputs":[x.strip() for x in inputs.splitlines() if x.strip()],"roles":[x.strip() for x in roles.splitlines() if x.strip()],"steps":[{"action":x.strip()} for x in steps.splitlines() if x.strip()],"decisions":[x.strip() for x in decisions.splitlines() if x.strip()],"exceptions":[x.strip() for x in exceptions.splitlines() if x.strip()],"output":output.strip(),"tags":[x.strip() for x in tags.split(",") if x.strip()]}
+                if _save_process_from_editor(updated,p["id"],note): st.session_state.edit_process=False; st.session_state.notice="New SOP version saved and re-indexed."; st.rerun()
+        tabs=st.tabs(["Overview","Workflow","Decisions & exceptions","Version history"])
+        with tabs[0]:
+            c1,c2=st.columns(2)
+            with c1:
+                st.markdown("#### Trigger")
+                st.write(p["trigger"] or "Not specified")
+                st.markdown("#### Required inputs")
+                for x in p["inputs"]:
+                    st.markdown(f"- {x}")
+            with c2:
+                st.markdown("#### People / roles")
+                for x in p["roles"]:
+                    st.markdown(f"- {x}")
+                st.markdown("#### Expected output")
+                st.write(p["output"] or "Not specified")
+        with tabs[1]:
+            for i,step in enumerate(p["steps"],1):
+                st.markdown(f"<div class='step-row'><span class='step-number'>{i}</span><div><b>{step.get('action','')}</b></div></div>",unsafe_allow_html=True)
+        with tabs[2]:
+            st.markdown("#### Decision points")
+            for x in p["decisions"]:
+                st.markdown(f"- {x}")
+            st.markdown("#### Exceptions & warnings")
+            for x in p["exceptions"]:
+                st.markdown(f"- {x}")
+        with tabs[3]:
+            if not versions: st.info("No version history yet.")
+            for v in versions:
+                with st.container(border=True):
+                    a,b,c=st.columns([1,2,2]);
+                    with a: st.markdown(f"**Version {v['version']}**")
+                    with b: st.caption(f"{v['changed_by']} · {v['created_at']}")
+                    with c: st.caption(v["change_note"] or "No change note")
+                    snapshot = v.get("snapshot") or {}
+                    with st.expander(f"Open version {v['version']}"):
+                        st.markdown(f"**Purpose:** {snapshot.get('description') or 'Not specified'}")
+                        st.markdown(f"**Trigger:** {snapshot.get('trigger') or 'Not specified'}")
+                        st.markdown("**Required inputs**")
+                        for item in snapshot.get("inputs", []) or []:
+                            st.markdown(f"- {item}")
+                        st.markdown("**People / roles**")
+                        for item in snapshot.get("roles", []) or []:
+                            st.markdown(f"- {item}")
+                        st.markdown("**Workflow**")
+                        for i, step in enumerate(snapshot.get("steps", []) or [], 1):
+                            action = step.get("action", "") if isinstance(step, dict) else str(step)
+                            st.markdown(f"{i}. {action}")
+                        st.markdown("**Decisions**")
+                        for item in snapshot.get("decisions", []) or []:
+                            st.markdown(f"- {item}")
+                        st.markdown("**Exceptions / warnings**")
+                        for item in snapshot.get("exceptions", []) or []:
+                            st.markdown(f"- {item}")
+                        st.markdown(f"**Expected output:** {snapshot.get('output') or 'Not specified'}")
+                    if can("edit"):
+                        latest_version = versions[0]["version"] if versions else v["version"]
+                        action_cols = st.columns(2)
+
+                        with action_cols[0]:
+                            if st.button(
+                                f"Restore v{v['version']}",
+                                key=f"restore_{p['id']}_{v['version']}",
+                                use_container_width=True,
+                            ):
+                                if restore_process_version(
+                                    p["id"],
+                                    v["version"],
+                                    st.session_state.user["id"],
+                                    st.session_state.user["name"],
+                                ):
+                                    index_process(p["id"],v["snapshot"])
+                                    log_activity(
+                                        "Process version restored",
+                                        f"{p['name']} → v{v['version']}",
+                                        st.session_state.user["name"],
+                                    )
+                                    st.session_state.notice = (
+                                        f"Version {v['version']} restored as a new version."
+                                    )
+                                    st.rerun()
+
+                        with action_cols[1]:
+                            if int(v["version"]) == int(latest_version):
+                                st.button(
+                                    "Delete",
+                                    key=f"delete_disabled_{p['id']}_{v['version']}",
+                                    disabled=True,
+                                    use_container_width=True,
+                                )
+                            elif st.button(
+                                f"Delete v{v['version']}",
+                                key=f"delete_{p['id']}_{v['version']}",
+                                use_container_width=True,
+                            ):
+                                st.session_state[
+                                    f"confirm_delete_{p['id']}_{v['version']}"
+                                ] = True
+
+                        confirm_key = f"confirm_delete_{p['id']}_{v['version']}"
+                        if st.session_state.get(confirm_key):
+                            st.warning(
+                                f"Delete Version {v['version']} permanently? "
+                                "This removes only this historical version."
+                            )
+                            confirm_cols = st.columns(2)
+                            with confirm_cols[0]:
+                                if st.button(
+                                    "Yes, delete version",
+                                    key=f"confirm_yes_{p['id']}_{v['version']}",
+                                    type="primary",
+                                    use_container_width=True,
+                                ):
+                                    ok, message = _delete_old_process_version(
+                                        p["id"], v["version"]
+                                    )
+                                    if ok:
+                                        log_activity(
+                                            "Process version deleted",
+                                            f"{p['name']} · v{v['version']}",
+                                            st.session_state.user["name"],
+                                        )
+                                        st.session_state.pop(confirm_key, None)
+                                        st.session_state.notice = (
+                                            f"Version {v['version']} deleted."
+                                        )
+                                        st.rerun()
+                                    else:
+                                        st.error(message)
+
+                            with confirm_cols[1]:
+                                if st.button(
+                                    "Cancel",
+                                    key=f"confirm_no_{p['id']}_{v['version']}",
+                                    use_container_width=True,
+                                ):
+                                    st.session_state.pop(confirm_key, None)
+                                    st.rerun()
+
+# ---------- Daily Operations ----------
+elif page == "Daily Operations":
+    business_id=current_business_id()
+    ops=get_daily_operations(business_id)
+    page_header("Daily Operations","See what needs attention today without digging through the database.","Operations")
+    cols=st.columns(4)
+    stats=[("Today sales",f"Rs. {ops['sales_total']:,.0f}",f"{ops['sales_count']} confirmed sale(s)"),("Low stock",len(ops['low_stock']),"Products at or below minimum"),("Pending supplier",ops['pending_supplier_orders'],"Draft / approval actions"),("Recent sales",len(ops['recent_sales']),"Latest transactions")]
+    for c,(a,b,d) in zip(cols,stats):
+        with c: stat_card(a,b,d)
+    st.markdown("### Needs attention")
+    if ops['low_stock']:
+        for item in ops['low_stock']:
+            st.warning(f"{item['name']}: {float(item['stock_quantity']):g} {item['unit']} available; minimum is {float(item['minimum_stock']):g}.")
+    else: st.success("No low-stock items right now.")
+    st.markdown("### Recent sales")
+    for sale in ops['recent_sales']:
+        st.markdown(f"<div class='premium-card' style='margin:.45rem 0'><b>{sale['transaction_ref']}</b><div class='muted'>Rs. {sale['total']:,.2f} · {sale['status']} · {sale['created_at']}</div></div>",unsafe_allow_html=True)
+    if is_manager_or_owner():
+        st.markdown("### Supplier actions")
+        for order in list_supplier_orders(business_id,20):
+            with st.container(border=True):
+                st.write(f"**Order #{order['id']} · {order['supplier_name']}**")
+                st.caption(f"Status: {order['status']} · {order['created_at']}")
+                if order['status'] in ('Draft','Pending Approval') and st.button("Approve",key=f"approve_ops_{order['id']}"):
+                    if approve_supplier_order(order['id'],st.session_state.user['id'],business_id):
+                        log_activity("Supplier order approved",f"Order #{order['id']} · {order['supplier_name']}",st.session_state.user['name'])
+                        st.success("Supplier order approved.")
+                        st.rerun()
+
+# ---------- Receipts ----------
+elif page == "Receipts":
+    business_id=current_business_id()
+    page_header("Receipts","Review saved sales and verify a customer receipt against the original order.","Receipt Agent")
+    sales=[]
+    for item in get_daily_operations(business_id)['recent_sales']:
+        sales.append(item)
+    if not sales:
+        empty_state("No sales yet","Confirm a sale from Smart Sale first.")
+    else:
+        options={f"#{s['id']} · {s['transaction_ref']} · Rs. {s['total']:,.2f}":s['id'] for s in sales}
+        label=st.selectbox("Select sale",list(options))
+        sale=get_sale(options[label],business_id)
+        if sale:
+            st.markdown(f"<div class='receipt-card'><div class='receipt-head'><div><div class='receipt-title'>Sale Receipt</div><div class='muted'>{sale['created_at']}</div></div><div class='receipt-ref'>{sale['transaction_ref']}</div></div>",unsafe_allow_html=True)
+            for item in sale['items']:
+                st.markdown(f"<div class='receipt-row'><span>{item['name']} × {float(item['quantity']):g}</span><span>Rs. {float(item['subtotal']):,.2f}</span></div>",unsafe_allow_html=True)
+            st.markdown(f"<div class='receipt-total'><span>Total</span><span>Rs. {float(sale['total']):,.2f}</span></div></div>",unsafe_allow_html=True)
+            st.download_button("⬇️ Download Receipt",receipt_download_text(sale),file_name=f"{sale['transaction_ref']}_receipt.txt",mime="text/plain",use_container_width=True)
+            uploaded=st.file_uploader("Upload receipt image for verification",type=['png','jpg','jpeg','webp'],key=f"receipt_upload_{sale['id']}")
+            if uploaded and st.button("Verify Receipt",type="primary",use_container_width=True):
+                try:
+                    with st.spinner("Reading and comparing receipt…"):
+                        expected=[{"product_id":x["product_id"],"name":x["name"],"quantity":x["quantity"],"unit_price":x["unit_price"]} for x in sale["items"]]
+                        result=verify_receipt(uploaded.getvalue(),uploaded.type,expected,sale["total"])
+                    st.session_state.receipt_result=result
+                except Exception:
+                    st.error("Receipt verification could not be completed. Please upload a clearer receipt image.")
+            if st.session_state.get('receipt_result'):
+                result=st.session_state.receipt_result
+                status=result.get('status','Needs Review')
+                if status == 'Match': st.success("Receipt matches the saved sale.")
+                elif status == 'Mismatch': st.warning("Receipt and saved sale contain differences. Review the details below.")
+                else: st.info("Receipt needs manual review.")
+                for m in result.get('mismatches',[]): st.write("•",m)
+
+# ---------- Suppliers ----------
+elif page == "Suppliers":
+    business_id=current_business_id()
+    page_header("Suppliers","See suppliers and create reviewable reorder drafts from low-stock items.","Operations Agent")
+    ops=get_daily_operations(business_id)
+    low=ops['low_stock']
+    if low:
+        st.markdown("### Reorder suggestions")
+        products=list_products(business_id)
+        for item in low:
+            product=next((p for p in products if int(p['id'])==int(item['id'])),None)
+            if not product: continue
+            supplier=find_supplier_for_product(product['id'],business_id)
+            with st.container(border=True):
+                st.write(f"**{product['name']}** · {float(product['stock_quantity']):g} {product['unit']} left")
+                if supplier:
+                    st.caption(f"Supplier: {supplier['name']} · contact: {supplier.get('contact','not provided')}")
+                    qty=max(float(product['minimum_stock'])-float(product['stock_quantity']),1.0)
+                    if is_manager_or_owner() and st.button(f"Create reorder draft ({qty:g} {product['unit']})",key=f"reorder_{product['id']}"):
+                        try:
+                            oid=create_supplier_order(supplier['id'],[{"product_id":product['id'],"quantity":qty,"unit_price":supplier.get('supplier_price')}],st.session_state.user['id'],business_id)
+                            log_activity("Supplier order draft created",f"Order #{oid} · {supplier['name']} · {product['name']}",st.session_state.user['name'])
+                            st.success(f"Draft #{oid} created. It still needs approval.")
+                            st.rerun()
+                        except Exception:
+                            st.error("Supplier draft could not be created.")
+                else: st.info("No supplier is linked to this product yet.")
+    else: st.success("No low-stock reorder suggestions right now.")
+    st.markdown("### Recent supplier orders")
+    for order in list_supplier_orders(business_id,30):
+        st.markdown(f"<div class='premium-card' style='margin:.45rem 0'><b>Order #{order['id']} · {order['supplier_name']}</b><div class='muted'>{order['status']} · {order['created_at']}</div></div>",unsafe_allow_html=True)
 
 # ---------- Activity ----------
 elif page == "Activity":

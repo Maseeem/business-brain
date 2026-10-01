@@ -1,22 +1,31 @@
-# Business Brain
+# Business Brain — Recovered Complete Project
 
-Simple multi-agent AI operations assistant for small shops. This upload is intentionally folder-free for easy GitHub web upload.
+This version restores the original Business Brain knowledge/process workspace and combines it with the newer multi-agent shop operations workflows.
 
-## Main agents
-- Coordinator Agent: routes sale, receipt, operations and knowledge requests.
-- Smart Sale Agent: understands voice/text orders and builds a database-priced cart.
-- Receipt Agent: Gemini vision extraction + deterministic Python comparison.
-- Operations Agent: inventory, low-stock and supplier draft workflows.
-- Knowledge Agent: answers from the existing Business Brain RAG/knowledge base.
+## Restored original workspace
+- Dashboard
+- Record Process
+- Knowledge
+- Ask Brain
+- Processes
+- Process Detail + version history
+- Activity / records
+- Settings + users/roles
+- Original demo processes: New Customer Order, Custom Cake Order, Inventory Restocking, Customer Complaint Handling
 
-## Shop catalog
-Use **Inventory** to paste product names one per line. Products are added to the current shop. Set selling prices, units, stock and minimum stock from the same page.
+## Operational workspace
+- Smart Sale: voice/text order capture, product matching, price/stock validation, deterministic totals, confirmation, saved sale receipt
+- Inventory: product search, price/stock/unit/minimum-stock editing, add products
+- Daily Operations: today sales, low stock, pending supplier actions, recent sales
+- Receipts: saved sale receipts, download, Gemini receipt verification + deterministic comparison
+- Suppliers: low-stock reorder drafts and approval flow
 
-## Memory
-Short-term workflow memory lives in the Streamlit session. Persistent business memory is stored in SQLite. Embeddings/RAG are for knowledge documents/processes, not current prices or stock.
+## Architecture
+Coordinator → Smart Sale / Receipt / Knowledge / Operations agents.
+SQLite is used for persistent business data. RAG is used for business knowledge/process retrieval. Python/database logic handles prices, stock, totals, validation and writes.
 
-## Environment
-Set `GROQ_API_KEY` for CrewAI/Groq agent calls and `GEMINI_API_KEY` for Gemini receipt/voice/knowledge features. Optional: `GEMINI_MODEL` and `GROQ_MODEL`.
+## UI
+Light background, green accents, readable white cards, no black-heavy interface.
 
-## GitHub / Streamlit Cloud
-Upload all extracted files from this ZIP into the repository root. There are no required folders. Main file: `app.py`.
+## Demo data
+Demo seeding is controlled by `SEED_DEMO_DATA`. Set it to `false` for a production database after the first setup.

@@ -4,10 +4,14 @@ NAV=[
     ("Dashboard","⌂"),
     ("Smart Sale","＋"),
     ("Inventory","▦"),
+    ("Receipts","🧾"),
     ("Daily Operations","◉"),
     ("Ask Brain","✦"),
     ("Knowledge","◫"),
     ("Processes","▣"),
+    ("Record Process","＋"),
+    ("Activity","•"),
+    ("Suppliers","⇄"),
     ("Settings","⚙"),
 ]
 
