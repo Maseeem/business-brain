@@ -161,8 +161,10 @@ def seed_demo_data():
         return
 
     now = datetime.now().isoformat(timespec="seconds")
-    c.execute("INSERT INTO businesses (id,name,profile,created_at) VALUES (1,?,?,?)",
-              ("Nova Bakery", "A neighborhood bakery specializing in fresh bread, celebration cakes, and custom orders.", now))
+    c.execute(
+        "INSERT OR IGNORE INTO businesses (id,name,profile,created_at) VALUES (1,?,?,?)",
+        ("Nova Bakery", "A neighborhood bakery specializing in fresh bread, celebration cakes, and custom orders.", now)
+    )
 
     demo_processes = [
         {
