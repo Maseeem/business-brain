@@ -192,38 +192,93 @@ page = st.session_state.page
 
 # ---------- Dashboard ----------
 if page == "Dashboard":
-    page_header("Good morning 👋", "Your business knowledge, organized and ready to work.", "Dashboard")
-    processes=list_processes(); knowledge=list_knowledge(); activity=get_activity(6)
-    cols=st.columns(4)
-    stats=[("Processes",len(processes),"Documented workflows"),("Knowledge items",len(knowledge),"Sources in your Brain"),("Indexed",sum(1 for x in knowledge if x["status"]=="Indexed"),"Ready for retrieval"),("Activity",len(get_activity(1000)),"Workspace events")]
-    for col,(label,value,sub) in zip(cols,stats):
-        with col: stat_card(label,value,sub)
-    st.markdown("<div class='section-gap'></div>",unsafe_allow_html=True)
-    left,right=st.columns([1.65,1],gap="large")
+    business_id = current_business_id()
+    ops = get_daily_operations(business_id)
+    products = list_products(business_id)
+    low_stock = ops.get("low_stock", [])
+    pending_supplier = int(ops.get("pending_supplier_orders", 0) or 0)
+    missing_price = [p for p in products if p.get("price") is None]
+    attention_count = len(low_stock) + len(missing_price) + pending_supplier
+
+    page_header("Good morning 👋", "Your business, agents and daily actions in one simple view.", "Business Brain")
+
+    # Simple live business metrics — calculated from the real database.
+    cols = st.columns(4)
+    stats = [
+        ("Today's Sales", f"Rs. {float(ops.get('sales_total', 0) or 0):,.0f}", f"{ops.get('sales_count', 0)} confirmed sale(s)"),
+        ("Today's Orders", str(ops.get('sales_count', 0)), "Confirmed transactions"),
+        ("Low Stock", str(len(low_stock)), "Products needing attention"),
+        ("Need Attention", str(attention_count), "Items or actions to review"),
+    ]
+    for col, (label, value, sub) in zip(cols, stats):
+        with col:
+            stat_card(label, value, sub)
+
+    st.markdown("<div class='section-gap'></div>", unsafe_allow_html=True)
+
+    # Multi-agent layer is visible here, while the existing pages remain unchanged.
+    st.markdown("### 🤖 Business Brain Agents")
+    st.caption("You do not need to choose an agent manually. The Coordinator routes each request to the right specialist.")
+    agent_cols = st.columns(5)
+    agents = [
+        ("◈", "Coordinator", "Routes your request", "Smart Sale", True),
+        ("＋", "Smart Sale", "Orders, cart & totals", "Smart Sale", True),
+        ("🧾", "Receipt Agent", "Checks uploaded receipts", "Receipts", True),
+        ("📚", "Knowledge Agent", "Answers from your RAG", "Ask Brain", True),
+        ("📦", "Operations Agent", "Stock & supplier drafts", "Daily Operations", True),
+    ]
+    for col, (icon, name, desc, target, allowed) in zip(agent_cols, agents):
+        with col:
+            st.markdown(
+                f"<div class='action-card'><div class='action-icon'>{icon}</div>"
+                f"<div class='action-title'>{name}</div><div class='action-desc'>{desc}</div></div>",
+                unsafe_allow_html=True,
+            )
+            if allowed and st.button(f"Open {name}", key=f"agent_home_{name}", use_container_width=True):
+                st.session_state.page = target
+                st.rerun()
+
+    st.markdown("<div class='section-gap'></div>", unsafe_allow_html=True)
+    left, right = st.columns([1.45, 1], gap="large")
+
     with left:
-        st.markdown("### Quick actions")
-        qcols=st.columns(3)
-        actions=[("＋","Record Process","Turn how your team works into an SOP.","Record Process",can("record")),("✦","Add Knowledge","Teach Business Brain something new.","Knowledge",can("knowledge")),("⌕","Ask Brain","Get an evidence-backed answer.","Ask Brain",True)]
-        for c,(icon,title,desc,target,allowed) in zip(qcols,actions):
-            with c:
-                st.markdown(f"<div class='action-card'><div class='action-icon'>{icon}</div><div class='action-title'>{title}</div><div class='action-desc'>{desc}</div></div>",unsafe_allow_html=True)
-                if allowed:
-                    if st.button(f"Open {title}",key=f"qa_{target}",use_container_width=True): st.session_state.page=target; st.rerun()
-                else: st.caption("Manager or Owner access")
-        st.markdown("<div class='section-gap'></div>",unsafe_allow_html=True)
-        st.markdown("### Recent processes")
-        if not processes: empty_state("No processes yet","Record your first workflow to start teaching your Business Brain.")
-        for p in processes[:5]:
-            c1,c2,c3=st.columns([4,1.5,1])
-            with c1: st.markdown(f"**{p['name']}**"); st.caption(p["description"] or "Structured business workflow")
-            with c2: st.caption(p["category"])
-            with c3:
-                if st.button("Open",key=f"open_p_{p['id']}"): st.session_state.selected_process=p["id"]; st.session_state.page="Process detail"; st.rerun()
+        st.markdown("### ⚠️ Need Attention")
+        if not low_stock and not missing_price and not pending_supplier:
+            st.success("Everything looks good. No urgent action is waiting.")
+        else:
+            for item in low_stock[:5]:
+                st.warning(f"**{item['name']}** — {float(item['stock_quantity']):g} {item['unit']} left; minimum is {float(item['minimum_stock']):g}.")
+            for item in missing_price[:5]:
+                st.info(f"**{item['name']}** — price is missing. Add a price before selling this product.")
+            if pending_supplier:
+                st.info(f"**{pending_supplier} supplier action(s)** are waiting for review/approval.")
+
     with right:
-        st.markdown("### Recent activity")
-        if not activity: empty_state("Nothing here yet","Your workspace activity will appear here.")
-        for item in activity:
-            st.markdown(f"<div class='activity-row'><div class='activity-dot'></div><div><b>{item['action']}</b><div class='muted'>{item['details']}</div><div class='tiny'>{item['created_at']}</div></div></div>",unsafe_allow_html=True)
+        st.markdown("### ⚡ Quick Actions")
+        q1, q2 = st.columns(2)
+        with q1:
+            if st.button("＋ New Sale", use_container_width=True, type="primary"):
+                st.session_state.page = "Smart Sale"; st.rerun()
+            if st.button("🧾 Check Receipt", use_container_width=True):
+                st.session_state.page = "Receipts"; st.rerun()
+        with q2:
+            if st.button("📦 Inventory", use_container_width=True):
+                st.session_state.page = "Inventory"; st.rerun()
+            if st.button("✦ Ask Brain", use_container_width=True):
+                st.session_state.page = "Ask Brain"; st.rerun()
+
+    st.markdown("<div class='section-gap'></div>", unsafe_allow_html=True)
+    st.markdown("### 🧭 How the agents work")
+    st.markdown(
+        "<div class='premium-card'>"
+        "<b>You</b> → <b>Coordinator</b> → <b>Specialized Agent</b> → "
+        "<b>Tools / Database / RAG</b> → <b>Action or Draft</b> → "
+        "<b>Your Approval</b> where needed"
+        "<div class='muted' style='margin-top:.45rem'>"
+        "Prices, stock, totals and database writes stay deterministic; AI is used for understanding, routing and explanation."
+        "</div></div>",
+        unsafe_allow_html=True,
+    )
 
 # ---------- Record Process ----------
 elif page == "Record Process":
