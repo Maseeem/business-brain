@@ -106,6 +106,12 @@ def init_db():
         mismatches_json TEXT DEFAULT '[]', created_by INTEGER DEFAULT 0, created_at TEXT DEFAULT '',
         FOREIGN KEY (sale_id) REFERENCES sales(id)
     );
+    CREATE TABLE IF NOT EXISTS business_memory (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, business_id INTEGER NOT NULL DEFAULT 1,
+        memory_type TEXT NOT NULL DEFAULT 'fact', key TEXT NOT NULL, value TEXT NOT NULL,
+        source TEXT DEFAULT 'owner', confidence REAL DEFAULT 1.0, created_at TEXT DEFAULT '', updated_at TEXT DEFAULT '',
+        UNIQUE(business_id, memory_type, key)
+    );
     """)
 
     # Migrate older MVP databases created before the final schema.
@@ -635,7 +641,12 @@ def seed_operational_data():
         ("Pepsi", "pepsi,cola", 100.0, 25.0, 10.0, "unit"),
         ("Tissue", "tissue,tissues", 80.0, 30.0, 10.0, "pack"),
         ("Surf", "surf,washing powder", 350.0, 12.0, 5.0, "pack"),
-        ("Flour", "flour,atta", 180.0, 8.0, 10.0, "kg"),
+        ("Flour", "flour,atta,aata,آٹا", 180.0, 8.0, 10.0, "kg"),
+        ("Sooji", "sooji,suji,semolina,سوجی", 220.0, 15.0, 5.0, "kg"),
+        ("Sabun", "sabun,soap,صابن", 150.0, 20.0, 5.0, "piece"),
+        ("Sugar", "sugar,cheeni,چینی", 170.0, 20.0, 5.0, "kg"),
+        ("Rice", "rice,chawal,چاول", 320.0, 18.0, 5.0, "kg"),
+        ("Cooking Oil", "oil,cooking oil,tel", 650.0, 10.0, 3.0, "liter"),
     ]
     for name, aliases, price, stock, minimum, unit in products:
         c.execute("""INSERT OR IGNORE INTO products
@@ -664,6 +675,107 @@ def seed_operational_data():
     c.commit()
     c.close()
 
+
+def _normalize_name(value):
+    return " ".join(str(value or "").strip().split())
+
+
+def _aliases_for(name, aliases=""):
+    values=[]
+    for raw in [name] + str(aliases or "").split(","):
+        v=_normalize_name(raw)
+        if v and v.lower() not in {x.lower() for x in values}:
+            values.append(v)
+    return ",".join(values)
+
+
+def create_product(name, price=None, unit="unit", stock_quantity=0, minimum_stock=0, aliases="", business_id=1):
+    name=_normalize_name(name)
+    if not name:
+        raise ValueError("Product name is required.")
+    try:
+        price_value = None if price in (None, "") else float(price)
+        stock=float(stock_quantity or 0)
+        minimum=float(minimum_stock or 0)
+    except (TypeError, ValueError):
+        raise ValueError("Price and stock must be valid numbers.")
+    if price_value is not None and price_value < 0:
+        raise ValueError("Price cannot be negative.")
+    if stock < 0 or minimum < 0:
+        raise ValueError("Stock values cannot be negative.")
+    c=_conn(); now=datetime.now().isoformat(timespec="seconds")
+    try:
+        cur=c.execute("""INSERT INTO products
+            (business_id,name,aliases,price,stock_quantity,minimum_stock,unit,active,created_at,updated_at)
+            VALUES (?,?,?,?,?,?,?,1,?,?)""",
+            (business_id,name,_aliases_for(name,aliases),price_value,stock,minimum,unit or "unit",now,now))
+        c.commit(); return cur.lastrowid
+    except sqlite3.IntegrityError:
+        c.rollback(); raise ValueError(f"{name} already exists in your product list.")
+    finally:
+        c.close()
+
+
+def update_product(product_id, name=None, price=None, unit=None, stock_quantity=None, minimum_stock=None, aliases=None, business_id=1):
+    product=get_product_by_id(product_id,business_id)
+    if not product: raise ValueError("Product not found.")
+    new_name=_normalize_name(name if name is not None else product["name"])
+    new_price=product["price"] if price is None else (None if price=="" else float(price))
+    new_stock=product["stock_quantity"] if stock_quantity is None else float(stock_quantity)
+    new_min=product["minimum_stock"] if minimum_stock is None else float(minimum_stock)
+    new_unit=unit if unit is not None else product["unit"]
+    new_aliases=_aliases_for(new_name, aliases if aliases is not None else product.get("aliases",""))
+    if new_price is not None and new_price < 0: raise ValueError("Price cannot be negative.")
+    if new_stock < 0 or new_min < 0: raise ValueError("Stock values cannot be negative.")
+    c=_conn(); now=datetime.now().isoformat(timespec="seconds")
+    try:
+        c.execute("""UPDATE products SET name=?,aliases=?,price=?,stock_quantity=?,minimum_stock=?,unit=?,updated_at=?
+                   WHERE id=? AND business_id=?""",(new_name,new_aliases,new_price,new_stock,new_min,new_unit or "unit",now,product_id,business_id))
+        c.commit(); return True
+    except sqlite3.IntegrityError:
+        c.rollback(); raise ValueError("Another product already uses that name.")
+    finally: c.close()
+
+
+def bulk_add_products(names, business_id=1):
+    created=[]; existing=[]
+    for raw in names:
+        name=_normalize_name(raw)
+        if not name: continue
+        if find_product(name,business_id):
+            existing.append(name); continue
+        try:
+            create_product(name, price=None, business_id=business_id)
+            created.append(name)
+        except ValueError:
+            existing.append(name)
+    return {"created":created,"existing":existing}
+
+
+def set_product_price(product_id, price, business_id=1):
+    product=get_product_by_id(product_id,business_id)
+    if not product: raise ValueError("Product not found.")
+    if price is None or float(price) < 0: raise ValueError("Enter a valid non-negative price.")
+    return update_product(product_id, price=float(price), business_id=business_id)
+
+
+def add_business_memory(key, value, memory_type="fact", source="owner", confidence=1.0, business_id=1):
+    key=_normalize_name(key); value=str(value or "").strip()
+    if not key or not value: raise ValueError("Memory key and value are required.")
+    c=_conn(); now=datetime.now().isoformat(timespec="seconds")
+    c.execute("""INSERT INTO business_memory (business_id,memory_type,key,value,source,confidence,created_at,updated_at)
+               VALUES (?,?,?,?,?,?,?,?)
+               ON CONFLICT(business_id,memory_type,key) DO UPDATE SET value=excluded.value,source=excluded.source,confidence=excluded.confidence,updated_at=excluded.updated_at""",
+              (business_id,memory_type,key,value,source,float(confidence),now,now))
+    c.commit(); c.close(); return True
+
+
+def list_business_memory(business_id=1, limit=100):
+    c=_conn(); rows=c.execute("SELECT * FROM business_memory WHERE business_id=? ORDER BY updated_at DESC LIMIT ?",(business_id,limit)).fetchall(); c.close(); return [dict(r) for r in rows]
+
+
+def delete_business_memory(memory_id, business_id=1):
+    c=_conn(); cur=c.execute("DELETE FROM business_memory WHERE id=? AND business_id=?",(memory_id,business_id)); c.commit(); ok=cur.rowcount>0; c.close(); return ok
 
 def find_product(query, business_id=1):
     q = (query or "").strip().lower()
@@ -760,6 +872,8 @@ def save_confirmed_sale(transaction_ref, total, items, created_by=0, business_id
                 raise ValueError(f"Quantity for {product['name']} must be greater than zero.")
             if quantity > float(product["stock_quantity"]):
                 raise ValueError(f"Not enough stock for {product['name']}. Available: {product['stock_quantity']:g}.")
+            if product["price"] is None:
+                raise ValueError(f"Price for {product['name']} is not set. Add the price in Product Catalog first.")
             unit_price = float(product["price"])
             subtotal = round(quantity * unit_price, 2)
             calculated_total += subtotal
@@ -840,7 +954,7 @@ def save_receipt_verification(sale_id, status, extracted_receipt, mismatches, cr
 def get_daily_operations(business_id=1):
     c = _conn()
     today = datetime.now().date().isoformat()
-    low = c.execute("SELECT id,name,stock_quantity AS stock,minimum_stock,unit FROM products WHERE business_id=? AND active=1 AND stock_quantity<=minimum_stock ORDER BY name", (business_id,)).fetchall()
+    low = c.execute("SELECT id,name,stock_quantity,minimum_stock,unit FROM products WHERE business_id=? AND active=1 AND stock_quantity<=minimum_stock ORDER BY name", (business_id,)).fetchall()
     sales_today = c.execute("SELECT COUNT(*) AS n, COALESCE(SUM(total),0) AS total FROM sales WHERE business_id=? AND date(created_at)=?", (business_id,today)).fetchone()
     pending_orders = c.execute("SELECT COUNT(*) AS n FROM supplier_orders WHERE business_id=? AND status IN ('Draft','Pending Approval')", (business_id,)).fetchone()[0]
     recent = c.execute("SELECT id,transaction_ref,total,status,created_at FROM sales WHERE business_id=? ORDER BY id DESC LIMIT 8", (business_id,)).fetchall()

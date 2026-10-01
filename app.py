@@ -8,6 +8,8 @@ from database import (
     get_process, create_process, update_process, delete_process, get_process_versions, restore_process_version,
     authenticate_user, list_users, create_user, get_user, update_user, reset_user_password, update_business, log_activity, ensure_demo_users,
     get_daily_operations, create_sale, create_sale_items, get_sale, approve_supplier_order, list_supplier_orders,
+    list_products, create_product, update_product, bulk_add_products, set_product_price,
+    add_business_memory, list_business_memory, delete_business_memory,
 )
 from agent import generate_sop_from_inputs, answer_business_question, transcribe_audio_to_text
 from coordinator_agent import route_request
@@ -153,8 +155,9 @@ if not st.session_state.user:
             st.rerun()
         else:
             st.error("Invalid username or password.")
-    st.info("Demo login: admin / BusinessBrain123!  ·  manager / BusinessBrain123!  ·  employee / BusinessBrain123!")
-    st.caption("Demo credentials are for testing only. Change them before production use.")
+    if os.getenv("SEED_DEMO_DATA", "true").lower() == "true":
+        st.info("Demo login: admin / BusinessBrain123!  ·  manager / BusinessBrain123!  ·  employee / BusinessBrain123!")
+        st.caption("Demo credentials are for testing only. Change them before production use.")
     st.markdown("</div>", unsafe_allow_html=True)
     st.stop()
 
@@ -166,7 +169,8 @@ if "draft_sources" not in st.session_state: st.session_state.draft_sources = []
 if "notice" not in st.session_state: st.session_state.notice = None
 if "sale_cart" not in st.session_state: st.session_state.sale_cart = []
 if "sale_last_id" not in st.session_state: st.session_state.sale_last_id = None
-if "sale_voice_transcript" not in st.session_state: st.session_state.sale_voice_transcript = ""
+if "sale_input_value" not in st.session_state: st.session_state.sale_input_value = ""
+if "sale_missing_price" not in st.session_state: st.session_state.sale_missing_price = []
 
 sidebar(business)
 with st.sidebar:
@@ -184,38 +188,42 @@ page = st.session_state.page
 
 # ---------- Dashboard ----------
 if page == "Dashboard":
-    page_header("Good morning 👋", "Your business knowledge, organized and ready to work.", "Dashboard")
-    processes=list_processes(); knowledge=list_knowledge(); activity=get_activity(6)
+    business_id=current_business_id()
+    ops=get_daily_operations(business_id)
+    page_header("Good morning 👋", "The few things worth looking at today.", "Home")
     cols=st.columns(4)
-    stats=[("Processes",len(processes),"Documented workflows"),("Knowledge items",len(knowledge),"Sources in your Brain"),("Indexed",sum(1 for x in knowledge if x["status"]=="Indexed"),"Ready for retrieval"),("Activity",len(get_activity(1000)),"Workspace events")]
+    stats=[
+        ("Today’s sales",f"Rs. {ops['sales_total']:,.0f}",f"{ops['sales_count']} sales"),
+        ("Orders",ops["sales_count"],"Confirmed today"),
+        ("Low stock",len(ops["low_stock"]),"Needs attention"),
+        ("Pending",ops["pending_supplier_orders"],"Supplier actions"),
+    ]
     for col,(label,value,sub) in zip(cols,stats):
         with col: stat_card(label,value,sub)
     st.markdown("<div class='section-gap'></div>",unsafe_allow_html=True)
-    left,right=st.columns([1.65,1],gap="large")
+    st.markdown("### Quick actions")
+    qcols=st.columns(3)
+    actions=[("＋","New Sale","Speak or type a customer order.","Smart Sale"),("▦","Check Inventory","See products, prices and stock.","Inventory"),("🧾","Verify Receipt","Check a receipt against a confirmed sale.","Smart Sale")]
+    for c,(icon,title,desc,target) in zip(qcols,actions):
+        with c:
+            st.markdown(f"<div class='action-card'><div class='action-icon'>{icon}</div><div class='action-title'>{title}</div><div class='action-desc'>{desc}</div></div>",unsafe_allow_html=True)
+            if st.button(title,key=f"home_{target}_{title}",use_container_width=True): st.session_state.page=target; st.rerun()
+    st.markdown("<div class='section-gap'></div>",unsafe_allow_html=True)
+    left,right=st.columns([1.25,1],gap="large")
     with left:
-        st.markdown("### Quick actions")
-        qcols=st.columns(4)
-        actions=[("＋","New Sale","Create a cart from voice or text.","Smart Sale",True),("◉","Check Stock","See low-stock items and supplier drafts.","Daily Operations",True),("✦","Ask Brain","Get an evidence-backed answer.","Ask Brain",True),("↗","Record Process","Turn how your team works into an SOP.","Record Process",can("record"))]
-        for c,(icon,title,desc,target,allowed) in zip(qcols,actions):
-            with c:
-                st.markdown(f"<div class='action-card'><div class='action-icon'>{icon}</div><div class='action-title'>{title}</div><div class='action-desc'>{desc}</div></div>",unsafe_allow_html=True)
-                if allowed:
-                    if st.button(f"Open {title}",key=f"qa_{target}",use_container_width=True): st.session_state.page=target; st.rerun()
-                else: st.caption("Manager or Owner access")
-        st.markdown("<div class='section-gap'></div>",unsafe_allow_html=True)
-        st.markdown("### Recent processes")
-        if not processes: empty_state("No processes yet","Record your first workflow to start teaching your Business Brain.")
-        for p in processes[:5]:
-            c1,c2,c3=st.columns([4,1.5,1])
-            with c1: st.markdown(f"**{p['name']}**"); st.caption(p["description"] or "Structured business workflow")
-            with c2: st.caption(p["category"])
-            with c3:
-                if st.button("Open",key=f"open_p_{p['id']}"): st.session_state.selected_process=p["id"]; st.session_state.page="Process detail"; st.rerun()
+        st.markdown("### Needs attention")
+        if not ops["low_stock"] and not ops["pending_supplier_orders"]:
+            st.success("Nothing urgent right now.")
+        for item in ops["low_stock"][:5]:
+            stock=float(item.get("stock_quantity",item.get("stock",0)) or 0); minimum=float(item.get("minimum_stock",0) or 0); unit=item.get("unit") or "unit"
+            st.markdown(f"<div class='premium-card' style='margin:.45rem 0'><span class='status-pill'>LOW STOCK</span><br><b>{item.get('name','Unknown product')}</b><div class='muted'>{stock:g} {unit} available · minimum {minimum:g}</div></div>",unsafe_allow_html=True)
+        if ops["pending_supplier_orders"]:
+            st.info(f"{ops['pending_supplier_orders']} supplier order(s) are waiting for review.")
     with right:
-        st.markdown("### Recent activity")
-        if not activity: empty_state("Nothing here yet","Your workspace activity will appear here.")
-        for item in activity:
-            st.markdown(f"<div class='activity-row'><div class='activity-dot'></div><div><b>{item['action']}</b><div class='muted'>{item['details']}</div><div class='tiny'>{item['created_at']}</div></div></div>",unsafe_allow_html=True)
+        st.markdown("### Recent sales")
+        if not ops["recent_sales"]: empty_state("No sales yet","Your confirmed sales will appear here.")
+        for sale in ops["recent_sales"][:5]:
+            st.markdown(f"<div class='premium-card' style='margin:.45rem 0'><b>{sale['transaction_ref']}</b><div class='muted'>Rs. {sale['total']:,.2f} · {sale['created_at']}</div></div>",unsafe_allow_html=True)
 
 # ---------- Smart Sale ----------
 elif page == "Smart Sale":
@@ -231,12 +239,11 @@ elif page == "Smart Sale":
             try:
                 with st.spinner("Transcribing order…"):
                     st.session_state.sale_input_value = transcribe_audio_to_text(audio)
-                    st.session_state.sale_voice_transcript = st.session_state.sale_input_value
                 st.success("Voice order transcribed. Review it before pricing.")
             except Exception:
                 st.error("I couldn't transcribe that recording. Please try again or type the order.")
-        if st.session_state.get("sale_voice_transcript"):
-            st.markdown("<div class='premium-card' style='margin:.5rem 0'><div class='eyebrow'>I understood</div><div style='font-size:1.05rem;line-height:1.55'>" + st.session_state.sale_voice_transcript.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;") + "</div><div class='muted'>Review the transcript, then click <b>Understand Order</b>.</div></div>", unsafe_allow_html=True)
+        if st.session_state.get("sale_input_value"):
+            st.markdown(f"<div class='premium-card' style='margin:.55rem 0'><div class='eyebrow'>I understood</div><div style='font-size:1.05rem;font-weight:650;margin-top:.25rem'>{st.session_state.sale_input_value}</div><div class='muted'>Review the transcript, then click Understand Order.</div></div>",unsafe_allow_html=True)
         order = st.text_area("⌨️ Type Order", value=st.session_state.get("sale_input_value", ""), placeholder="1 Pepsi, 2 tissue aur 1 Surf", height=105, key="sale_input")
         c1, c2 = st.columns(2)
         with c1:
@@ -247,12 +254,17 @@ elif page == "Smart Sale":
                         st.warning(f"This request looks like a {route['route']} request. Please use the matching workflow.")
                     else:
                         result = build_cart(order, business_id)
+                        st.session_state.sale_missing_price = result.get("missing_price", [])
                         if not result["cart"]:
-                            st.warning("I couldn't identify a product from that order. Please select a product name or try again.")
+                            if result.get("missing_price"):
+                                st.warning("These products need prices before they can be sold: " + ", ".join(result["missing_price"]) + ". Open Inventory to set prices.")
+                            else:
+                                st.warning("I couldn't match any product in your shop catalog. Add the product in Inventory or try again.")
                         else:
                             st.session_state.sale_cart = result["cart"]
                             st.session_state.sale_route = route
-                            st.success("Order understood. Prices were loaded from the database.")
+                            extra = (" Price missing for: " + ", ".join(result.get("missing_price",[])) + ".") if result.get("missing_price") else ""
+                            st.success("Order understood. Prices were loaded from your shop catalog." + extra)
                 except Exception:
                     st.error("I couldn't build the cart. Please check the product names and quantities.")
         with c2:
@@ -260,7 +272,6 @@ elif page == "Smart Sale":
                 st.session_state.sale_cart = []
                 st.session_state.sale_last_id = None
                 st.session_state.sale_input_value = ""
-                st.session_state.sale_voice_transcript = ""
                 st.rerun()
         if st.session_state.sale_cart:
             st.markdown("### 2 · Review cart")
@@ -318,6 +329,77 @@ elif page == "Smart Sale":
         else:
             st.info("Confirm a sale first, then its receipt can be verified here.")
 
+# ---------- Inventory / Product Catalog ----------
+elif page == "Inventory":
+    business_id=current_business_id()
+    page_header("Inventory", "Your shop products, prices and stock. Add many products at once; only prices need your input.", "Shop Catalog")
+    products=list_products(business_id)
+    with st.container(border=True):
+        st.markdown("### Add products quickly")
+        st.caption("Write one product per line. Business Brain will add them to this shop only.")
+        names=st.text_area("Product names",placeholder="Atta\nSooji\nCheeni\nChawal\nSurf\nSabun\nPepsi",height=150,label_visibility="collapsed")
+        if st.button("Add products",type="primary",use_container_width=True):
+            lines=[x.strip() for x in names.splitlines() if x.strip()]
+            if not lines: st.warning("Write at least one product name.")
+            else:
+                result=bulk_add_products(lines,business_id)
+                if result["created"]: log_activity("Products added",", ".join(result["created"]),st.session_state.user["name"],business_id)
+                st.success(f"Added {len(result['created'])} product(s). Now set their prices below.")
+                if result["existing"]: st.info("Already in catalog: " + ", ".join(result["existing"]))
+                st.rerun()
+    st.markdown("<div class='section-gap'></div>",unsafe_allow_html=True)
+    if not products:
+        empty_state("No products yet","Add your shop items above.")
+    else:
+        st.markdown("### Your products")
+        for product in products:
+            with st.container(border=True):
+                a,b,c,d=st.columns([2.4,1.1,1.2,1.4])
+                with a:
+                    st.markdown(f"**{product['name']}**")
+                    st.caption(f"{product.get('unit','unit')} · aliases: {product.get('aliases','') or product['name']}")
+                with b: st.metric("Price", "Not set" if product.get("price") is None else f"Rs. {product['price']:,.0f}")
+                with c: st.metric("Stock", f"{float(product.get('stock_quantity') or 0):g}")
+                with d: st.metric("Minimum", f"{float(product.get('minimum_stock') or 0):g}")
+                with st.expander("Edit product"):
+                    with st.form(f"product_edit_{product['id']}"):
+                        e1,e2=st.columns(2)
+                        with e1:
+                            new_price=st.number_input("Selling price",min_value=0.0,value=float(product["price"] or 0),step=1.0,format="%.2f")
+                            new_unit=st.text_input("Unit",value=product.get("unit") or "unit")
+                            new_stock=st.number_input("Current stock",min_value=0.0,value=float(product.get("stock_quantity") or 0),step=1.0,format="%.2f")
+                        with e2:
+                            new_min=st.number_input("Minimum stock",min_value=0.0,value=float(product.get("minimum_stock") or 0),step=1.0,format="%.2f")
+                            new_aliases=st.text_input("Aliases",value=product.get("aliases") or "")
+                            new_name=st.text_input("Product name",value=product["name"])
+                        save=st.form_submit_button("Save changes",type="primary",use_container_width=True)
+                    if save:
+                        try:
+                            update_product(product["id"],name=new_name,price=new_price,unit=new_unit,stock_quantity=new_stock,minimum_stock=new_min,aliases=new_aliases,business_id=business_id)
+                            log_activity("Product updated",new_name,st.session_state.user["name"],business_id)
+                            st.success("Product updated.")
+                            st.rerun()
+                        except Exception:
+                            st.error("The product could not be updated. Check the values and try again.")
+    st.markdown("<div class='section-gap'></div>",unsafe_allow_html=True)
+    st.markdown("### Business memory")
+    st.caption("Small long-term facts that help Business Brain remember your shop. Prices and stock remain in the database; documents remain in Knowledge/RAG.")
+    with st.form("memory_form"):
+        mk=st.text_input("Memory name",placeholder="Preferred supplier")
+        mv=st.text_input("Remember this",placeholder="ABC Distributor for grocery deliveries")
+        save_mem=st.form_submit_button("Remember",use_container_width=True)
+    if save_mem:
+        if mk.strip() and mv.strip():
+            add_business_memory(mk,mv,business_id=business_id); log_activity("Business memory updated",mk,st.session_state.user["name"],business_id); st.success("Remembered."); st.rerun()
+        else: st.warning("Add both a name and a value.")
+    memories=list_business_memory(business_id)
+    for mem in memories[:10]:
+        a,b=st.columns([5,1])
+        with a: st.markdown(f"**{mem['key']}** · {mem['value']}")
+        with b:
+            if st.button("Forget",key=f"forget_mem_{mem['id']}"):
+                delete_business_memory(mem["id"],business_id); st.rerun()
+
 # ---------- Daily Operations ----------
 elif page == "Daily Operations":
     page_header("Daily Operations", "Only the business items that actually need attention.", "Operations Agent")
@@ -334,11 +416,7 @@ elif page == "Daily Operations":
         st.markdown("### What needs attention?")
         if not data["low_stock"]: st.success("No low-stock products right now.")
         for item in data["low_stock"]:
-            stock = float(item.get("stock", item.get("stock_quantity", 0)) or 0)
-            minimum_stock = float(item.get("minimum_stock", 0) or 0)
-            unit = item.get("unit", "unit") or "unit"
-            name = item.get("name", "Unknown product")
-            st.markdown(f"<div class='premium-card' style='margin:.45rem 0'><span class='status-pill'>LOW STOCK</span><br><b>{name}</b><div class='muted'>{stock:g} {unit} available · minimum {minimum_stock:g}</div></div>",unsafe_allow_html=True)
+            st.markdown(f"<div class='premium-card' style='margin:.45rem 0'><span class='status-pill'>LOW STOCK</span><br><b>{item['name']}</b><div class='muted'>{item.get('stock', item.get('stock_quantity', 0)):g} {item.get('unit', 'unit')} available · minimum {item.get('minimum_stock', 0):g}</div></div>",unsafe_allow_html=True)
             if st.button(f"Create draft · {item['name']}",key=f"draft_{item['id']}",use_container_width=True):
                 try:
                     draft=supplier_draft(item["id"],business_id,None,st.session_state.user["id"])
