@@ -6,9 +6,9 @@ from dotenv import load_dotenv
 from database import (
     init_db, seed_demo_data, seed_operational_data, get_business, list_processes, list_knowledge, get_activity,
     get_process, create_process, update_process, delete_process, get_process_versions, restore_process_version,
-    authenticate_user, list_users, create_user, get_user, update_user, reset_user_password, update_business, log_activity, ensure_demo_users,
-    get_daily_operations, create_sale, create_sale_items, get_sale, approve_supplier_order, list_supplier_orders,
-    list_products, create_product, update_product, bulk_add_products, set_product_price,
+    authenticate_user, list_users, create_user, update_user, reset_user_password, update_business, log_activity, ensure_demo_users,
+    get_daily_operations, get_sale, approve_supplier_order, list_supplier_orders,
+    list_products, update_product, bulk_add_products,
     add_business_memory, list_business_memory, delete_business_memory,
 )
 from agent import generate_sop_from_inputs, answer_business_question, transcribe_audio_to_text
