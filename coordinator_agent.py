@@ -12,30 +12,30 @@ def _fallback_route(text: str):
         return "operations"
     if any(x in q for x in ["policy", "refund", "procedure", "process", "rule"]):
         return "knowledge"
-    if any(x in q for x in ["pepsi", "tissue", "surf", "flour", "papad", "nimko", "oil", "sooji", "سوجی", "پاپڑ", "نمکو", "آئل", "آئل", "تیل", "sale", "sell", "buy", "chahiye"]):
-        return "sale"
-    if any(x in q.split() for x in ["ایک", "اک", "دو", "تین", "چار", "پانچ", "چھ", "سات", "آٹھ", "آٹھ", "نو", "دس", "ek", "aik", "do", "teen", "tin", "char", "chaar", "paanch", "che", "chay", "saat", "aath", "nau", "das"]):
+    if any(x in q for x in ["pepsi", "tissue", "surf", "flour", "sale", "sell", "buy", "chahiye"]):
         return "sale"
     return "unknown"
 
 
-def route_request(text: str) -> dict:
-    fallback = {"route": _fallback_route(text), "reason": "deterministic fallback"}
-    prompt = f"""Classify the shopkeeper request into exactly one route: sale, receipt, operations, knowledge, unknown.
-Examples: '1 Pepsi aur 2 tissue' => sale; 'receipt check karo' => receipt; 'Flour kam hai?' => operations; 'refund policy kya hai?' => knowledge.
-Return only JSON: {{"route":"sale|receipt|operations|knowledge|unknown","reason":"short"}}.
-Request: {text}"""
+def route_request(text: str, business_id: int = 1) -> dict:
+    """Route safely. If the text contains a known catalog product, treat it as a sale.
+    This prevents the coordinator LLM from turning ordinary Urdu orders into unknown requests.
+    """
+    q = (text or "").lower()
+    if any(x in q for x in ["receipt", "رسید", "verify"]):
+        return {"route":"receipt","reason":"receipt workflow keyword"}
+    if any(x in q for x in ["policy", "refund", "procedure", "process", "rule"]):
+        return {"route":"knowledge","reason":"knowledge workflow keyword"}
     try:
-        data = crew_json(
-            "Coordinator Agent",
-            "Route each shopkeeper request to exactly one specialized workflow without solving it.",
-            "You are the front-door coordinator of Business Brain. You route work and never invent business facts.",
-            prompt,
-            fallback=fallback,
-        )
-        route = data.get("route", "unknown")
-        if route not in ROUTES:
-            route = "unknown"
-        return {"route": route, "reason": str(data.get("reason", ""))[:240]}
+        from database import list_products
+        for p in list_products(business_id):
+            terms=[p.get("name","")]+[a.strip() for a in str(p.get("aliases","")).split(",") if a.strip()]
+            if any(t and t.lower() in q for t in terms):
+                return {"route":"sale","reason":"known catalog product detected"}
     except Exception:
-        return fallback
+        pass
+    if any(x in q for x in ["stock", "inventory", "supplier", "low stock"]):
+        return {"route":"operations","reason":"operations workflow keyword"}
+    if any(x in q for x in ["sale", "sell", "buy", "chahiye", "چاہیے", "دو کلو", "ایک کلو"]):
+        return {"route":"sale","reason":"sale language detected"}
+    return {"route":"unknown","reason":"no matching workflow"}

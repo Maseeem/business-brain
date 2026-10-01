@@ -641,31 +641,30 @@ def seed_operational_data():
         ("Pepsi", "pepsi,cola", 100.0, 25.0, 10.0, "unit"),
         ("Tissue", "tissue,tissues", 80.0, 30.0, 10.0, "pack"),
         ("Surf", "surf,washing powder", 350.0, 12.0, 5.0, "pack"),
-        ("Flour", "flour,atta,aata,آٹا", 180.0, 8.0, 10.0, "kg"),
+        ("Flour", "flour,atta,aata,آٹا,اٹا", 180.0, 8.0, 10.0, "kg"),
         ("Sooji", "sooji,suji,semolina,سوجی", 220.0, 15.0, 5.0, "kg"),
-        ("Papad", "papad,papadum,پاپڑ,پاپڑ", None, 0.0, 5.0, "pack"),
-        ("Nimko", "nimko,nimco,نمکو", None, 0.0, 5.0, "pack"),
         ("Sabun", "sabun,soap,صابن", 150.0, 20.0, 5.0, "piece"),
         ("Sugar", "sugar,cheeni,چینی", 170.0, 20.0, 5.0, "kg"),
+        ("Papad", "papad,papadum,پاپڑ,پاپڑ", None, 10.0, 5.0, "pack"),
+        ("Nimko", "nimko,nimco,نمکو", None, 10.0, 5.0, "pack"),
         ("Rice", "rice,chawal,چاول", 320.0, 18.0, 5.0, "kg"),
         ("Cooking Oil", "oil,cooking oil,tel,آئل,آئل,تیل", 650.0, 10.0, 3.0, "liter"),
     ]
     for name, aliases, price, stock, minimum, unit in products:
-        existing = c.execute("SELECT id, aliases FROM products WHERE business_id=? AND lower(name)=lower(?)", (business_id, name)).fetchone()
-        if existing:
-            # Add safe built-in aliases without overwriting an owner's custom aliases.
-            current = [x.strip() for x in str(existing[1] or "").split(",") if x.strip()]
-            merged = current[:]
-            for alias in str(aliases or "").split(","):
+        c.execute("""INSERT OR IGNORE INTO products
+            (business_id,name,aliases,price,stock_quantity,minimum_stock,unit,active,created_at,updated_at)
+            VALUES (?,?,?,?,?,?,?,1,?,?)""",
+            (business_id, name, aliases, price, stock, minimum, unit, now, now))
+        # Merge built-in aliases into existing demo products without overwriting owner edits.
+        row = c.execute("SELECT id,aliases FROM products WHERE business_id=? AND name=?", (business_id, name)).fetchone()
+        if row:
+            existing = [x.strip() for x in str(row["aliases"] or "").split(",") if x.strip()]
+            merged = existing[:]
+            for alias in str(aliases).split(","):
                 alias = alias.strip()
-                if alias and alias.lower() not in {x.lower() for x in merged}:
+                if alias and alias not in merged:
                     merged.append(alias)
-            c.execute("UPDATE products SET aliases=?, updated_at=? WHERE id=? AND business_id=?", (",".join(merged), now, existing[0], business_id))
-        else:
-            c.execute("""INSERT INTO products
-                (business_id,name,aliases,price,stock_quantity,minimum_stock,unit,active,created_at,updated_at)
-                VALUES (?,?,?,?,?,?,?,1,?,?)""",
-                (business_id, name, aliases, price, stock, minimum, unit, now, now))
+            c.execute("UPDATE products SET aliases=?, updated_at=? WHERE id=? AND business_id=?", (",".join(merged), now, row["id"], business_id))
 
     suppliers = [
         ("ABC Distributor", "0300-0000000"),
