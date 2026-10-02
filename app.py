@@ -174,20 +174,37 @@ if "draft_sources" not in st.session_state: st.session_state.draft_sources = []
 if "notice" not in st.session_state: st.session_state.notice = None
 if "sale_cart" not in st.session_state: st.session_state.sale_cart = []
 if "sale_input_value" not in st.session_state: st.session_state.sale_input_value = ""
+if "sale_input_widget_version" not in st.session_state: st.session_state.sale_input_widget_version = 0
 if "sale_last_id" not in st.session_state: st.session_state.sale_last_id = None
 if "sale_missing_price" not in st.session_state: st.session_state.sale_missing_price = []
 if "sale_unknown_items" not in st.session_state: st.session_state.sale_unknown_items = []
 
 def reset_sale_workflow(clear_last_sale=True):
-    """Reset only active Smart Sale state; leave unrelated session state intact."""
+    """Reset active Smart Sale state without mutating an instantiated widget key.
+
+    The text-area owns its Streamlit session-state key. A versioned widget key is
+    used so the next rerun creates a fresh widget instead of assigning directly
+    to a key that Streamlit already owns.
+    """
     st.session_state.sale_cart = []
     st.session_state.sale_input_value = ""
-    st.session_state.sale_input = ""
     st.session_state.sale_missing_price = []
     st.session_state.sale_unknown_items = []
     st.session_state.sale_route = None
+    st.session_state.sale_input_widget_version = int(st.session_state.get("sale_input_widget_version", 0)) + 1
+    st.session_state.sale_edit_widget_version = int(st.session_state.get("sale_edit_widget_version", 0)) + 1
+    st.session_state.sale_receipt_widget_version = int(st.session_state.get("sale_receipt_widget_version", 0)) + 1
     if clear_last_sale:
         st.session_state.sale_last_id = None
+
+
+def reset_active_sale_for_new_request():
+    """Clear the active cart/validation state while preserving the current input widget."""
+    st.session_state.sale_cart = []
+    st.session_state.sale_missing_price = []
+    st.session_state.sale_unknown_items = []
+    st.session_state.sale_route = None
+    st.session_state.sale_last_id = None
 
 
 sidebar(business)
@@ -570,21 +587,21 @@ elif page == "Smart Sale":
                 with st.spinner("Transcribing order…"):
                     transcript = transcribe_audio_to_text(audio)
                     st.session_state.sale_input_value = transcript
-                    st.session_state.sale_input = transcript
+                    st.session_state.sale_input_widget_version = int(st.session_state.get("sale_input_widget_version", 0)) + 1
                 st.success("Voice order transcribed. Review it before pricing.")
             except Exception:
                 st.error("I couldn't transcribe that recording. Please try again or type the order.")
         if st.session_state.get("sale_input_value"):
             st.markdown(f"<div class='premium-card' style='margin:.55rem 0'><div class='eyebrow'>I understood</div><div style='font-size:1.05rem;font-weight:650;margin-top:.25rem'>{st.session_state.sale_input_value}</div><div class='muted'>Review the transcript, then click Understand Order.</div></div>",unsafe_allow_html=True)
-        order = st.text_area("⌨️ Type Order", value=st.session_state.get("sale_input_value", ""), placeholder="1 Pepsi, 2 tissue aur 1 Surf", height=105, key="sale_input")
+        sale_input_key = f"sale_input_{int(st.session_state.get('sale_input_widget_version', 0))}"
+        order = st.text_area("⌨️ Type Order", value=st.session_state.get("sale_input_value", ""), placeholder="1 Pepsi, 2 tissue aur 1 Surf", height=105, key=sale_input_key)
         c1, c2 = st.columns(2)
         with c1:
             if st.button("Understand Order", type="primary", use_container_width=True) and order.strip():
                 try:
-                    # A new captured request always replaces the active sale.
-                    # This prevents a previous cart/unknown item from leaking into
-                    # the next order when routing or parsing fails.
-                    reset_sale_workflow(clear_last_sale=True)
+                    # A newly captured request replaces only the active sale state.
+                    # Do not mutate the already-instantiated input widget.
+                    reset_active_sale_for_new_request()
                     route = route_request(order, business_id)
                     if route["route"] != "sale":
                         st.warning(f"This request looks like a {route['route']} request. Please use the matching workflow.")
@@ -595,13 +612,12 @@ elif page == "Smart Sale":
                         st.session_state.sale_cart = result.get("cart", [])
                         st.session_state.sale_route = route
                         st.session_state.sale_input_value = order
-                        st.session_state.sale_input = order
                         if not st.session_state.sale_cart and not st.session_state.sale_unknown_items:
                             st.warning("I couldn't match any product in your shop catalog. Add the product in Shop Catalog or try again.")
                         else:
                             st.success("Order understood. Every matched item is shown below with its saved price and stock.")
                 except Exception:
-                    reset_sale_workflow(clear_last_sale=True)
+                    reset_active_sale_for_new_request()
                     st.error("I couldn't build the order. Please check the product names and quantities.")
         with c2:
             if st.button("Clear Cart", use_container_width=True):
@@ -685,7 +701,8 @@ elif page == "Smart Sale":
             if missing_price or stock_errors:
                 st.warning("Sale is not ready yet. Fix the price and stock issues above. You do not need to leave this page.")
             st.markdown(f"<div class='premium-card'><div class='eyebrow'>Deterministic total</div><div class='big-number'>{('Rs. '+format(total,',.2f')) if ready else 'Pending price / stock checks'}</div><div class='muted'>Calculated by Python from the saved shop prices.</div></div>", unsafe_allow_html=True)
-            edit = st.text_input("Edit current order", placeholder="Tissue 3 kar do", key="cart_edit")
+            edit_key = f"cart_edit_{int(st.session_state.get('sale_edit_widget_version', 0))}"
+            edit = st.text_input("Edit current order", placeholder="Tissue 3 kar do", key=edit_key)
             if st.button("Apply Edit", use_container_width=True) and edit.strip():
                 try:
                     edited=apply_cart_edit(st.session_state.sale_cart, edit, business_id)
@@ -718,7 +735,8 @@ elif page == "Smart Sale":
                     st.markdown(f"<div class='receipt-row'><span><b>{item['name']}</b> × {float(item['quantity']):g}<br><span class='muted'>Rs. {float(item['unit_price']):,.2f} each</span></span><b>Rs. {float(item['subtotal']):,.2f}</b></div>", unsafe_allow_html=True)
                 st.markdown(f"<div class='receipt-total'><span>Total</span><span>Rs. {float(sale['total']):,.2f}</span></div></div>", unsafe_allow_html=True)
                 st.download_button("⬇️ Download Receipt", data=receipt_download_text(sale), file_name=f"{sale['transaction_ref']}_receipt.txt", mime="text/plain", use_container_width=True, key=f"download_receipt_{sale['id']}")
-            receipt=st.file_uploader("Verify an uploaded receipt",type=["png","jpg","jpeg","webp"],key="receipt_upload")
+            receipt_key = f"receipt_upload_{int(st.session_state.get('sale_receipt_widget_version', 0))}"
+            receipt=st.file_uploader("Verify an uploaded receipt",type=["png","jpg","jpeg","webp"],key=receipt_key)
             if receipt and st.button("Verify Receipt",use_container_width=True):
                 try:
                     expected=[{"product_id":x["product_id"],"name":x["name"],"quantity":x["quantity"],"unit_price":x["unit_price"]} for x in sale["items"]]
