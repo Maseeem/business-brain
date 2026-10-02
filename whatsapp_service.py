@@ -5,7 +5,7 @@ import urllib.error
 import urllib.request
 from datetime import datetime
 
-from database import get_business, get_daily_operations, list_products, list_supplier_orders, query_today_sales
+from database import DB_PATH, get_business, get_daily_operations, list_products, list_supplier_orders, query_today_sales
 
 
 def _secret(name):
@@ -140,8 +140,13 @@ def build_daily_report(role, business_id, report_date=None, categories=None):
                        "pending_approvals": pending_suppliers if "supplier" in categories else [], "receipt_status": _receipt_summary(business_id) if "receipts" in categories else {"pending": 0},
                        "activity": [] if "activity" not in categories else []})
     elif role == "Manager":
-        report.update({"low_stock": low if "inventory" in categories else [], "out_of_stock": out if "inventory" in categories else [], "receipt_status": _receipt_summary(business_id) if "receipts" in categories else {"pending": 0},
-                       "operational_alerts": ["Review low-stock and receipt-verification items in Daily Operations."]})
+        report.update({"sales": today if "sales" in categories else {"sales_total": 0, "order_count": 0},
+                       "orders": today["order_count"] if "sales" in categories else 0,
+                       "low_stock": low if "inventory" in categories else [],
+                       "out_of_stock": out if "inventory" in categories else [],
+                       "supplier_orders": supplier_orders if "supplier" in categories else [],
+                       "receipt_status": _receipt_summary(business_id) if "receipts" in categories else {"pending": 0},
+                       "operational_alerts": ["Review low-stock, supplier/order status and receipt-verification items in Daily Operations."]})
     else:
         report.update({"sales": today if "sales" in categories else {"sales_total": 0, "order_count": 0}, "orders": today["order_count"] if "sales" in categories else 0})
     return report
@@ -149,7 +154,7 @@ def build_daily_report(role, business_id, report_date=None, categories=None):
 
 def _receipt_summary(business_id):
     import sqlite3
-    with sqlite3.connect("business_brain.db") as conn:
+    with sqlite3.connect(DB_PATH) as conn:
         row = conn.execute("SELECT COUNT(*) FROM receipt_verifications WHERE business_id=? AND status IN ('Needs Review','Possible mismatch','Unclear')", (business_id,)).fetchone()
         return {"pending": int(row[0] or 0)}
 
@@ -170,11 +175,15 @@ def format_daily_report(report):
         if "receipt_status" in report:
             lines += [f"Receipt Verification Pending: {report['receipt_status']['pending']}"]
     elif role == "Manager":
+        if "sales" in report:
+            lines += ["", f"Today's Sales: {_money(report['sales']['sales_total'])}", f"Orders: {report['orders']}"]
         if "low_stock" in report:
             lines += ["", "Low Stock:"]
             lines += [f"- {p['name']} — {float(p['stock_quantity']):g} {p.get('unit') or 'unit'}" for p in report["low_stock"]] or ["- None"]
         if "out_of_stock" in report:
             lines += ["", f"Out of Stock: {len(report['out_of_stock'])}"]
+        if "supplier_orders" in report:
+            lines += [f"Supplier/Order Status: {len(report['supplier_orders'])} order(s) in recent status list"]
         if "receipt_status" in report:
             lines += [f"Receipt Verification Pending: {report['receipt_status']['pending']}"]
         lines += [f"- {x}" for x in report.get("operational_alerts", [])]

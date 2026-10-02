@@ -115,6 +115,13 @@ def init_db():
         id INTEGER PRIMARY KEY AUTOINCREMENT, business_id INTEGER NOT NULL, role TEXT NOT NULL, categories_json TEXT DEFAULT '[]',
         enabled INTEGER NOT NULL DEFAULT 1, UNIQUE(business_id, role)
     );
+    CREATE TABLE IF NOT EXISTS missing_product_requests (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, business_id INTEGER NOT NULL DEFAULT 1,
+        product_name TEXT NOT NULL, requested_quantity REAL NOT NULL DEFAULT 1,
+        requesting_user_id INTEGER DEFAULT 0, requesting_user_name TEXT DEFAULT '', requesting_user_role TEXT DEFAULT 'Employee',
+        status TEXT NOT NULL DEFAULT 'Pending', reviewed_by INTEGER DEFAULT 0, review_note TEXT DEFAULT '',
+        created_at TEXT DEFAULT '', reviewed_at TEXT DEFAULT ''
+    );
     CREATE TABLE IF NOT EXISTS business_memory (
         id INTEGER PRIMARY KEY AUTOINCREMENT, business_id INTEGER NOT NULL DEFAULT 1,
         memory_type TEXT NOT NULL DEFAULT 'fact', key TEXT NOT NULL, value TEXT NOT NULL,
@@ -1060,6 +1067,37 @@ def approve_supplier_order(order_id, approved_by=0, business_id=1):
     cur=c.execute("UPDATE supplier_orders SET status='Approved', approved_by=?, updated_at=? WHERE id=? AND business_id=? AND status IN ('Draft','Pending Approval')", (approved_by,now,order_id,business_id))
     c.commit(); ok=cur.rowcount>0; c.close(); return ok
 
+
+# ---------- Missing product requests ----------
+def create_missing_product_request(product_name, quantity=1, requesting_user_id=0, requesting_user_name="", requesting_user_role="Employee", business_id=1):
+    name = str(product_name or "").strip()
+    if not name:
+        raise ValueError("Product name is required.")
+    qty = float(quantity or 1)
+    if qty <= 0:
+        qty = 1.0
+    c = _conn(); now = datetime.now().isoformat(timespec="seconds")
+    cur = c.execute(
+        "INSERT INTO missing_product_requests (business_id,product_name,requested_quantity,requesting_user_id,requesting_user_name,requesting_user_role,status,created_at) VALUES (?,?,?,?,?,?,?,?)",
+        (business_id, name, qty, requesting_user_id, requesting_user_name, requesting_user_role, "Pending", now),
+    )
+    c.commit(); rid = cur.lastrowid; c.close(); return rid
+
+def list_missing_product_requests(business_id=1, status=None, limit=100):
+    c = _conn()
+    if status:
+        rows = c.execute("SELECT * FROM missing_product_requests WHERE business_id=? AND status=? ORDER BY id DESC LIMIT ?", (business_id, status, limit)).fetchall()
+    else:
+        rows = c.execute("SELECT * FROM missing_product_requests WHERE business_id=? ORDER BY id DESC LIMIT ?", (business_id, limit)).fetchall()
+    c.close(); return [dict(r) for r in rows]
+
+def review_missing_product_request(request_id, status, reviewed_by=0, review_note="", business_id=1):
+    status = str(status or "").strip()
+    if status not in {"Approved", "Rejected"}:
+        raise ValueError("Invalid missing-product request status.")
+    c = _conn(); now = datetime.now().isoformat(timespec="seconds")
+    cur = c.execute("UPDATE missing_product_requests SET status=?, reviewed_by=?, review_note=?, reviewed_at=? WHERE id=? AND business_id=? AND status='Pending'", (status, reviewed_by, str(review_note or ""), now, request_id, business_id))
+    c.commit(); ok = cur.rowcount > 0; c.close(); return ok
 
 # ---------- WhatsApp / report settings ----------
 def get_whatsapp_settings(business_id=1):

@@ -69,9 +69,11 @@ def build_daily_report_pdf(role, business_id, report_date=None, categories=None)
         story.append(Paragraph("4. Supplier / Reorder Actions", styles["heading"])); story.append(Paragraph("; ".join(f"Order #{o['id']} · {o['supplier_name']} · {o['status']}" for o in report["pending_approvals"]) or "No pending supplier approvals.", styles["body"]))
         story.append(Paragraph("5. Receipt / Verification Summary", styles["heading"])); story.append(Paragraph(f"Pending verification: {report['receipt_status']['pending']}", styles["body"]))
     elif role == "Manager":
-        story.append(Paragraph("1. Inventory / Low Stock", styles["heading"])); story.append(_inventory_table(report["low_stock"], report["low_stock"]))
-        story.append(Paragraph("2. Receipt / Verification", styles["heading"])); story.append(Paragraph(f"Pending verification: {report['receipt_status']['pending']}", styles["body"]))
-        story.append(Paragraph("3. Operational Alerts", styles["heading"])); story.append(Paragraph("\n".join(report["operational_alerts"]), styles["body"]))
+        story.append(Paragraph("1. Sales / Order Summary", styles["heading"])); story.append(_table([["Metric","Value"],["Today's Sales",_money(report['sales']['sales_total'])],["Today's Orders",str(report['orders'])]], [70*mm, 80*mm]))
+        story.append(Paragraph("2. Inventory / Low Stock", styles["heading"])); story.append(_inventory_table(report["low_stock"], report["low_stock"]))
+        story.append(Paragraph("3. Supplier / Order Status", styles["heading"])); story.append(Paragraph("; ".join(f"Order #{o['id']} · {o['supplier_name']} · {o['status']}" for o in report.get("supplier_orders", [])) or "No supplier orders.", styles["body"]))
+        story.append(Paragraph("4. Receipt / Verification", styles["heading"])); story.append(Paragraph(f"Pending verification: {report['receipt_status']['pending']}", styles["body"]))
+        story.append(Paragraph("5. Operational Alerts", styles["heading"])); story.append(Paragraph("\n".join(report["operational_alerts"]), styles["body"]))
     else:
         story.append(Paragraph("1. Sales Summary", styles["heading"])); story.append(_table([["Metric","Value"],["Today's Sales",_money(report['sales']['sales_total'])],["Today's Orders",str(report['orders'])]], [70*mm, 80*mm]))
     story += [Spacer(1, 14), Paragraph("Business Brain — role-scoped report", styles["small"])]

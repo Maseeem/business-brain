@@ -1,5 +1,6 @@
 import sqlite3
 import os
+from datetime import datetime
 import streamlit as st
 from dotenv import load_dotenv
 
@@ -9,6 +10,7 @@ from database import (
     authenticate_user, list_users, create_user, get_user, update_user, reset_user_password, update_business, log_activity, ensure_demo_users,
     get_daily_operations, list_products, update_product, bulk_add_products, get_sale, list_supplier_orders, approve_supplier_order,
     save_confirmed_sale, find_supplier, find_supplier_for_product, create_supplier_order,
+    create_missing_product_request, list_missing_product_requests, review_missing_product_request,
     get_whatsapp_settings, save_whatsapp_settings, update_whatsapp_status,
 )
 from agent import generate_sop_from_inputs, transcribe_audio_to_text
@@ -72,6 +74,28 @@ def _as_steps(value):
         if isinstance(item, dict): out.append(item)
         elif str(item).strip(): out.append({"action": str(item).strip()})
     return out
+
+def _process_is_relevant(process, role):
+    if role == "Owner":
+        return True
+    text = " ".join([str(process.get(k, "")) for k in ("name", "description", "category", "trigger", "owner")]).lower()
+    for k in ("inputs", "roles", "steps", "decisions", "exceptions", "tags"):
+        value = process.get(k, [])
+        if isinstance(value, list):
+            text += " " + " ".join(str(x.get("action", "")) if isinstance(x, dict) else str(x) for x in value)
+    if role == "Manager":
+        return True
+    keywords = ("customer", "order", "sale", "sales", "refund", "service", "complaint", "cash", "checkout", "return")
+    return any(k in text for k in keywords)
+
+
+def _ask_brain_allowed_intent(role, intent):
+    if role == "Owner":
+        return True
+    if role == "Manager":
+        return intent in {"inventory", "inventory_all", "low_stock", "price", "sales_today", "orders_today", "sales_7d", "supplier_lookup", "supplier_status"}
+    return intent in {"inventory", "inventory_all", "low_stock", "price", "sales_today", "orders_today", "sales_7d"}
+
 
 def _save_process_from_editor(values, existing_id=None, reason="Updated process"):
     if existing_id:
@@ -327,8 +351,7 @@ if page == "Dashboard":
 
 # ---------- Record Process ----------
 elif page == "Record Process":
-    if not can("record"):
-        st.warning("Your Employee role is view-only. Ask a Manager or Owner to record a process."); st.stop()
+    require_permission("record_process")
     page_header("Record a process","Teach Business Brain how your team actually gets work done.","Process Recorder")
     st.markdown("<div class='info-banner'><b>Two easy ways to record.</b> Type the process, upload evidence, or record your explanation by voice. Nothing is saved until you approve the SOP.</div>",unsafe_allow_html=True)
     tab_text,tab_voice=st.tabs(["Text / files","🎙️ Voice-to-SOP"])
@@ -525,12 +548,19 @@ elif page == "Ask Brain":
                     route_result = route_request(question, business_id)
                     route = route_result.get("route", "unknown") if isinstance(route_result, dict) else str(route_result)
 
+                    role = str((st.session_state.get("user") or {}).get("role") or "Employee")
                     if route == "operations":
-                        result = execute_operation(
-                            question,
-                            business_id,
-                            int((st.session_state.get("user") or {}).get("id") or 0),
-                        )
+                        from operations_agent import classify_operation_request
+                        classified = classify_operation_request(question, business_id)
+                        intent = classified.get("intent", "unknown")
+                        if not _ask_brain_allowed_intent(role, intent):
+                            result = {"ok": False, "error": "Is role ke liye ye Ask Brain action allowed nahi hai. Read-only operational information hi available hai."}
+                        else:
+                            result = execute_operation(
+                                question,
+                                business_id,
+                                int((st.session_state.get("user") or {}).get("id") or 0),
+                            )
 
                     elif route == "sale":
                         result = {
@@ -642,10 +672,26 @@ elif page == "Smart Sale":
         unknown_items = st.session_state.get("sale_unknown_items", []) or []
         if unknown_items:
             st.markdown("### Unresolved products")
-            for unknown in unknown_items:
+            remaining_unknowns = []
+            for idx, unknown in enumerate(unknown_items):
                 name = str(unknown.get("name", "Unknown product")).strip() or "Unknown product"
                 qty = float(unknown.get("quantity", 0) or 0)
-                st.warning(f"**{name.title()} × {qty:g} — Unknown product**\n\nThis product is not in the catalog yet. Add it to Inventory before completing the sale.")
+                st.warning(f"**{name.title()} × {qty:g} — Unknown product**\n\nThis product is not in the catalog yet.")
+                uc1, uc2 = st.columns(2)
+                with uc1:
+                    if st.button("Remove from Order", key=f"remove_unknown_{idx}", use_container_width=True):
+                        remaining_unknowns = [x for j, x in enumerate(unknown_items) if j != idx]
+                        st.session_state.sale_unknown_items = remaining_unknowns
+                        st.success(f"Removed {name.title()} from this order.")
+                        st.rerun()
+                with uc2:
+                    if st.button("Report Missing Product", key=f"report_unknown_{idx}", use_container_width=True):
+                        try:
+                            user = st.session_state.user or {}
+                            create_missing_product_request(name, qty, int(user.get("id") or 0), user.get("name", ""), user.get("role", "Employee"), business_id)
+                            st.success("✅ Missing product request sent to Manager/Owner.")
+                        except Exception:
+                            st.error("Missing product request could not be saved. Please try again.")
 
         if st.session_state.sale_cart:
             st.markdown("### 2 · Review order")
@@ -676,7 +722,8 @@ elif page == "Smart Sale":
                         if price is None:
                             st.markdown("**PRICE**")
                             new_price=st.number_input("Set price", min_value=0.0, step=1.0, value=0.0, key=f"sale_price_{product['id']}", label_visibility="collapsed")
-                            if st.button("Save price", key=f"save_sale_price_{product['id']}", use_container_width=True):
+                            if st.button("Save price", key=f"save_sale_price_{product['id']}", use_container_width=True, disabled=not can("pricing")):
+                                require_permission("pricing")
                                 if new_price <= 0:
                                     st.error("Enter a real selling price greater than 0.")
                                 else:
@@ -689,7 +736,8 @@ elif page == "Smart Sale":
                             st.markdown(f"Rs. {float(price):,.2f}")
                             with st.popover("Edit price"):
                                 edited_price=st.number_input("Selling price", min_value=0.0, step=1.0, value=float(price), key=f"edit_sale_price_{product['id']}")
-                                if st.button("Save", key=f"save_edit_price_{product['id']}", use_container_width=True):
+                                if st.button("Save", key=f"save_edit_price_{product['id']}", use_container_width=True, disabled=not can("pricing")):
+                                    require_permission("pricing")
                                     if edited_price <= 0: st.error("Enter a price greater than 0.")
                                     else:
                                         update_product(product["id"], price=float(edited_price), business_id=business_id)
@@ -817,8 +865,9 @@ elif page == "Inventory":
                     with c4:
                         st.markdown("<div class='inventory-label'>Minimum stock</div>", unsafe_allow_html=True)
                         new_min = st.number_input("Minimum stock", min_value=0.0, step=1.0, value=minimum, key=f"inv_min_{product['id']}", label_visibility="collapsed")
-                    save = st.form_submit_button("Save changes", type="primary", use_container_width=True)
+                    save = st.form_submit_button("Save changes", type="primary", use_container_width=True, disabled=not can("inventory_edit"))
                 if save:
+                    require_permission("inventory_edit")
                     try:
                         update_product(product["id"], price=float(new_price), stock_quantity=float(new_stock), unit=new_unit, minimum_stock=float(new_min), business_id=business_id)
                         log_activity("Product updated", f"{product['name']} · price Rs. {new_price:,.2f} · stock {new_stock:g} {new_unit}", st.session_state.user["name"], business_id)
@@ -831,8 +880,9 @@ elif page == "Inventory":
     st.caption("Add one product per line. Business Brain will create the catalog records without inventing prices.")
     with st.form("bulk_add_inventory"):
         names = st.text_area("Product names", placeholder="Papad\nNimko\nBiscuits", height=100)
-        add = st.form_submit_button("Add products", use_container_width=True)
+        add = st.form_submit_button("Add products", use_container_width=True, disabled=not can("inventory_edit"))
     if add:
+        require_permission("inventory_edit")
         try:
             result = bulk_add_products(names.splitlines(), business_id)
             created = result.get("created", [])
@@ -851,7 +901,8 @@ elif page == "Inventory":
 # ---------- Process Library ----------
 elif page == "Processes":
     page_header("Processes","View and manage how work gets done.","Process library")
-    processes=list_processes()
+    role = st.session_state.user.get("role", "Employee")
+    processes=[p for p in list_processes() if _process_is_relevant(p, role)]
     total=len(processes); active=sum(1 for p in processes if p["status"]=="Active"); cats=len(set(p["category"] for p in processes)); recent=sum(1 for p in processes if p.get("updated_at","")[:10] >= __import__('datetime').datetime.now().strftime('%Y-%m-%d'))
     m=st.columns(4); 
     for col,(lab,val,sub) in zip(m,[("Total",total,"Documented processes"),("Active",active,"Currently in use"),("Categories",cats,"Process areas"),("Updated today",recent,"Recent changes")]):
@@ -875,6 +926,9 @@ elif page == "Processes":
 elif page == "Process detail":
     p=get_process(st.session_state.get("selected_process"))
     if not p: st.error("Process not found.")
+    elif not _process_is_relevant(p, st.session_state.user.get("role", "Employee")):
+        st.error("You do not have permission to view this process.")
+        st.stop()
     else:
         page_header(p["name"],p["description"],"Process")
         versions=get_process_versions(p["id"])
@@ -896,6 +950,7 @@ elif page == "Process detail":
                 d1,d2=st.columns(2)
                 with d1:
                     if st.button("Yes, delete process",type="primary",use_container_width=True):
+                        require_permission("edit")
                         process_name = p["name"]
                         if delete_process(p["id"]):
                             log_activity("Process deleted",f"{process_name} (ID {p['id']})",st.session_state.user["name"])
@@ -917,6 +972,7 @@ elif page == "Process detail":
                 name=st.text_input("Process name",p["name"]); category=st.text_input("Category",p["category"]); purpose=st.text_area("Purpose",p["description"]); trigger=st.text_input("Trigger",p["trigger"]); inputs=st.text_area("Required inputs","\n".join(p["inputs"])); roles=st.text_area("People / roles","\n".join(p["roles"])); steps=st.text_area("Step-by-step workflow","\n".join([f"{i+1}. {x.get('action','')}" for i,x in enumerate(p["steps"])]),height=220); decisions=st.text_area("Decisions / conditions","\n".join(p["decisions"])); exceptions=st.text_area("Exceptions / warnings","\n".join(p["exceptions"])); output=st.text_area("Expected output",p["output"]); tags=st.text_input("Tags",", ".join(p["tags"])); note=st.text_input("Change note","Updated SOP")
                 save=st.form_submit_button("Save new version",type="primary")
             if save:
+                require_permission("edit")
                 updated={"name":name.strip(),"description":purpose.strip(),"category":category.strip() or "Operations","owner":p["owner"],"status":p["status"],"trigger":trigger.strip(),"inputs":[x.strip() for x in inputs.splitlines() if x.strip()],"roles":[x.strip() for x in roles.splitlines() if x.strip()],"steps":[{"action":x.strip()} for x in steps.splitlines() if x.strip()],"decisions":[x.strip() for x in decisions.splitlines() if x.strip()],"exceptions":[x.strip() for x in exceptions.splitlines() if x.strip()],"output":output.strip(),"tags":[x.strip() for x in tags.split(",") if x.strip()]}
                 if _save_process_from_editor(updated,p["id"],note): st.session_state.edit_process=False; st.session_state.notice="New SOP version saved and re-indexed."; st.rerun()
         tabs=st.tabs(["Overview","Workflow","Decisions & exceptions","Version history"])
@@ -983,6 +1039,7 @@ elif page == "Process detail":
                                 key=f"restore_{p['id']}_{v['version']}",
                                 use_container_width=True,
                             ):
+                                require_permission("edit")
                                 if restore_process_version(
                                     p["id"],
                                     v["version"],
@@ -1031,6 +1088,7 @@ elif page == "Process detail":
                                     type="primary",
                                     use_container_width=True,
                                 ):
+                                    require_permission("edit")
                                     ok, message = _delete_old_process_version(
                                         p["id"], v["version"]
                                     )
@@ -1074,6 +1132,45 @@ elif page == "Daily Operations":
     st.markdown("### Recent sales")
     for sale in ops['recent_sales']:
         st.markdown(f"<div class='premium-card' style='margin:.45rem 0'><b>{sale['transaction_ref']}</b><div class='muted'>Rs. {sale['total']:,.2f} · {sale['status']} · {sale['created_at']}</div></div>",unsafe_allow_html=True)
+
+    st.markdown("### Daily report")
+    report_categories = ["sales", "inventory", "supplier", "receipts"] if can("reports_full") else (["sales", "inventory", "supplier", "receipts"] if st.session_state.user.get("role") == "Manager" else ["sales"])
+    report_role = st.session_state.user.get("role", "Employee")
+    if st.button("📄 Generate Daily Report PDF", use_container_width=True):
+        st.session_state.daily_report_pdf = build_daily_report_pdf(report_role, business_id, categories=report_categories)
+    if st.session_state.get("daily_report_pdf"):
+        st.download_button("Download Daily Report PDF", data=st.session_state.daily_report_pdf, file_name=f"daily_report_{datetime.now().date().isoformat()}_{str(report_role).lower()}.pdf", mime="application/pdf", use_container_width=True)
+
+    if st.session_state.user.get("role") in {"Owner", "Manager"}:
+        st.markdown("### Missing product requests")
+        pending_missing = list_missing_product_requests(business_id, status="Pending", limit=50)
+        if not pending_missing:
+            st.caption("No pending missing-product requests.")
+        for req in pending_missing:
+            with st.container(border=True):
+                st.write(f"**{req['product_name']} × {float(req['requested_quantity']):g}**")
+                st.caption(f"Requested by {req['requesting_user_name'] or 'Team member'} ({req['requesting_user_role']}) · {req['created_at']}")
+                r1, r2 = st.columns(2)
+                with r1:
+                    if st.button("Approve Request", key=f"approve_missing_{req['id']}", use_container_width=True):
+                        if review_missing_product_request(req['id'], "Approved", st.session_state.user['id'], "Approved for catalog review", business_id):
+                            st.success("Request approved. Add the product to the catalog with the normal inventory workflow.")
+                            st.rerun()
+                with r2:
+                    if st.button("Reject Request", key=f"reject_missing_{req['id']}", use_container_width=True):
+                        if review_missing_product_request(req['id'], "Rejected", st.session_state.user['id'], "Rejected", business_id):
+                            st.success("Missing product request rejected.")
+                            st.rerun()
+
+    if st.session_state.user.get("role") == "Manager":
+        st.markdown("### Supplier / order status")
+        orders = list_supplier_orders(business_id, 20)
+        if orders:
+            for order in orders:
+                st.markdown(f"<div class='premium-card' style='margin:.45rem 0'><b>Order #{order['id']} · {order['supplier_name']}</b><div class='muted'>{order['status']} · {order['created_at']}</div></div>", unsafe_allow_html=True)
+        else:
+            st.caption("No supplier orders found.")
+
     if can("supplier_approve"):
         st.markdown("### Supplier actions")
         for order in list_supplier_orders(business_id,20):
@@ -1200,7 +1297,7 @@ elif page == "WhatsApp":
 
     st.markdown("### Daily report")
     role_for_report = st.selectbox("Report preview / manual send", ["Owner", "Manager", "Employee"], index=0)
-    preview_categories = {"Owner": ["sales", "inventory", "supplier", "receipts"], "Manager": ["inventory", "receipts"], "Employee": ["sales"]}[role_for_report]
+    preview_categories = {"Owner": ["sales", "inventory", "supplier", "receipts"], "Manager": ["sales", "inventory", "supplier", "receipts"], "Employee": ["sales"]}[role_for_report]
     report = build_daily_report(role_for_report, business_id, categories=preview_categories)
     st.text(format_daily_report(report))
     recipient_list = (settings.get("role_recipients") or {}).get(role_for_report, []) or ((settings.get("recipients") or []) if role_for_report in ("Owner", "Admin") else [])
@@ -1242,6 +1339,7 @@ elif page == "Settings":
             profile = st.text_area("Short profile", business["profile"], height=120)
             save = st.form_submit_button("Save changes", type="primary", use_container_width=True)
         if save:
+            require_permission("settings")
             if not name.strip():
                 st.error("Business name cannot be empty.")
             else:
@@ -1274,6 +1372,7 @@ elif page == "Settings":
                             new_status = st.selectbox("Status", ["Active", "Inactive"], index=0 if u["status"] == "Active" else 1, key=f"status_{u['id']}")
                             update_btn = st.form_submit_button("Save user", use_container_width=True)
                         if update_btn:
+                            require_permission("users")
                             try:
                                 if u["id"] == st.session_state.user["id"] and new_status == "Inactive":
                                     st.error("You cannot deactivate the account you are currently using.")
@@ -1290,6 +1389,7 @@ elif page == "Settings":
                             confirm_pw = st.text_input("Confirm password", type="password", key=f"cpw_{u['id']}")
                             reset_btn = st.form_submit_button("Reset password", use_container_width=True)
                         if reset_btn:
+                            require_permission("users")
                             if new_pw != confirm_pw:
                                 st.error("Passwords do not match.")
                             else:
@@ -1317,6 +1417,7 @@ elif page == "Settings":
             role = st.selectbox("Role", ["Manager", "Employee"])
             add = st.form_submit_button("Create user", type="primary", use_container_width=True)
         if add:
+            require_permission("users")
             try:
                 uid = create_user(n, un, pw, role)
                 log_activity("User created", f"@{un.strip().lower()} · {role}", st.session_state.user["name"])

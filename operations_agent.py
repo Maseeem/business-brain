@@ -17,7 +17,7 @@ from crewai_tools import get_inventory_tools
 
 OPERATION_INTENTS = {
     "inventory", "low_stock", "inventory_all", "price", "sales_today",
-    "orders_today", "sales_7d", "supplier_lookup", "supplier_order", "unknown",
+    "orders_today", "sales_7d", "supplier_lookup", "supplier_status", "supplier_order", "unknown",
 }
 
 
@@ -84,6 +84,8 @@ def _fallback_intent(text):
     q = (text or "").strip().lower()
     if any(x in q for x in ["order bana", "order banado", "order bna", "reorder", "purchase", "mangwa"]):
         return {"intent": "supplier_order", "reason": "supplier/reorder request"}
+    if any(x in q for x in ["supplier status", "supplier order status", "order status", "pending supplier", "supplier ki status"]):
+        return {"intent": "supplier_status", "reason": "supplier/order status request"}
     if any(x in q for x in ["supplier kaun", "supplier", "vendor", "kis supplier", "supplier se"]):
         return {"intent": "supplier_lookup", "reason": "supplier lookup request"}
     if any(x in q for x in ["pichlay 7", "pichle 7", "last 7", "7 days", "haftay", "week"]):
@@ -112,6 +114,7 @@ def classify_operation_request(text: str, business_id=1) -> dict:
 Return JSON only: {{"intent":"...","reason":"..."}}
 Rules:
 - supplier lookup (who supplies a product) -> supplier_lookup
+- supplier/order status -> supplier_status
 - supplier/reorder/order draft -> supplier_order
 - product selling price -> price
 - today's sales amount -> sales_today
@@ -194,6 +197,14 @@ def answer_sales_last_7_days(business_id=1):
     return {"ok": True, "answer": f"Pichlay **7 din** mein **{data['order_count']} confirmed orders** huay aur total sales **Rs {_fmt_num(data['sales_total'])}** hain.", "sources": [], "live_data": True}
 
 
+def answer_supplier_status(business_id=1):
+    from database import list_supplier_orders
+    orders = list_supplier_orders(business_id, 20)
+    if not orders:
+        return {"ok": True, "answer": "Abhi koi supplier order nahi mila.", "sources": [], "live_data": True}
+    lines = [f"- **Order #{o['id']} · {o['supplier_name']}** — {o['status']}" for o in orders]
+    return {"ok": True, "answer": "**Supplier / order status:**\n" + "\n".join(lines), "sources": [], "live_data": True}
+
 def answer_supplier_lookup(text, business_id=1):
     product = _find_product(text, business_id)
     if not product:
@@ -254,6 +265,8 @@ def execute_operation(text, business_id=1, created_by=0):
         return answer_sales_last_7_days(business_id)
     if intent == "supplier_lookup":
         return answer_supplier_lookup(text, business_id)
+    if intent == "supplier_status":
+        return answer_supplier_status(business_id)
     if intent == "supplier_order":
         return draft_supplier_order(text, business_id, created_by)
     return {"ok": False, "error": "Main is operational request ko confidently classify nahi kar saka."}
