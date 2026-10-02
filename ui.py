@@ -314,65 +314,51 @@ def inject_css():
         color:#253247!important;
     }
 
-    /* FINAL SAFE SELECT FIX — text contrast only; do not change page backgrounds */
-    [data-baseweb="select"] [role="combobox"],
-    [data-baseweb="select"] [role="combobox"] *,
-    [data-baseweb="select"] div[class*="singleValue"],
-    [data-baseweb="select"] input {
+    /* FINAL SELECTBOX FIX — only the closed selected-value box. */
+    [data-testid="stSelectbox"] [data-baseweb="select"],
+    [data-testid="stSelectbox"] [data-baseweb="select"] > div,
+    [data-testid="stSelectbox"] [data-baseweb="select"] > div > div,
+    [data-testid="stSelectbox"] [data-baseweb="select"] [role="combobox"] {
+        background:#ffffff !important;
         color:#17212b !important;
-        -webkit-text-fill-color:#17212b !important;
         opacity:1 !important;
-        text-shadow:none !important;
-    }
-    [data-baseweb="select"] svg {
-        color:#17212b !important;
-        fill:#17212b !important;
-        opacity:1 !important;
-    }
-    [role="option"],
-    [role="option"] * {
-        color:#17212b !important;
-        -webkit-text-fill-color:#17212b !important;
-        opacity:1 !important;
-    }
-    [role="option"]:hover,
-    [role="option"][aria-selected="true"] {
-        color:#155c3b !important;
-        -webkit-text-fill-color:#155c3b !important;
+        color-scheme:light !important;
     }
 
-    /* ONLY FIX: dropdown option text inside the opened menu */
-    [data-baseweb="popover"] [role="option"],
-    [data-baseweb="popover"] [role="option"] *,
-    [data-baseweb="menu"] [role="option"],
-    [data-baseweb="menu"] [role="option"] *,
-    [role="listbox"] [role="option"],
-    [role="listbox"] [role="option"] * {
-        color:#17212b !important;
-        -webkit-text-fill-color:#17212b !important;
-        opacity:1 !important;
-        text-shadow:none !important;
-    }
-
-    /* FINAL MICRO-FIX: selected value inside the closed selectbox must be visible. */
-    [data-baseweb="select"] [class*="singleValue"],
-    [data-baseweb="select"] [class*="SingleValue"],
-    [data-baseweb="select"] [aria-live="polite"],
-    [data-baseweb="select"] [role="combobox"] > div,
-    [data-baseweb="select"] [role="combobox"] > div > div {
+    [data-testid="stSelectbox"] [data-baseweb="select"] *,
+    [data-testid="stSelectbox"] [data-baseweb="select"] span,
+    [data-testid="stSelectbox"] [data-baseweb="select"] div[class*="singleValue"],
+    [data-testid="stSelectbox"] [data-baseweb="select"] div[class*="SingleValue"],
+    [data-testid="stSelectbox"] [data-baseweb="select"] [aria-live="polite"],
+    [data-testid="stSelectbox"] [data-baseweb="select"] input {
         color:#17212b !important;
         -webkit-text-fill-color:#17212b !important;
         opacity:1 !important;
         visibility:visible !important;
         text-shadow:none !important;
+        filter:none !important;
+        mix-blend-mode:normal !important;
     }
 
-    /* Text must remain readable everywhere. */
-    [data-testid="stAppViewContainer"] p,
-    [data-testid="stAppViewContainer"] span,
-    [data-testid="stAppViewContainer"] label,
-    [data-testid="stAppViewContainer"] div{
-        --darkreader-text-color:#253247;
+    [data-testid="stSelectbox"] [data-baseweb="select"] svg {
+        color:#17212b !important;
+        fill:#17212b !important;
+        opacity:1 !important;
+    }
+
+    /* Open-menu options only: keep their existing white surface, dark text. */
+    [data-testid="stSelectbox"] ~ [data-baseweb="popover"] [role="option"],
+    [data-baseweb="popover"] [role="option"],
+    [data-baseweb="menu"] [role="option"] {
+        color:#17212b !important;
+        -webkit-text-fill-color:#17212b !important;
+        opacity:1 !important;
+    }
+    [data-baseweb="popover"] [role="option"] *,
+    [data-baseweb="menu"] [role="option"] * {
+        color:#17212b !important;
+        -webkit-text-fill-color:#17212b !important;
+        opacity:1 !important;
     }
     </style>
     """,unsafe_allow_html=True)
