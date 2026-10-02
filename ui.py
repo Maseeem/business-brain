@@ -341,6 +341,19 @@ def inject_css():
         -webkit-text-fill-color:#155c3b !important;
     }
 
+    /* ONLY FIX: dropdown option text inside the opened menu */
+    [data-baseweb="popover"] [role="option"],
+    [data-baseweb="popover"] [role="option"] *,
+    [data-baseweb="menu"] [role="option"],
+    [data-baseweb="menu"] [role="option"] *,
+    [role="listbox"] [role="option"],
+    [role="listbox"] [role="option"] * {
+        color:#17212b !important;
+        -webkit-text-fill-color:#17212b !important;
+        opacity:1 !important;
+        text-shadow:none !important;
+    }
+
     /* Text must remain readable everywhere. */
     [data-testid="stAppViewContainer"] p,
     [data-testid="stAppViewContainer"] span,
