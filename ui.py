@@ -32,9 +32,9 @@ def inject_css():
     .section-gap{height:.85rem}
     .hero{border:1px solid #cfe5d7;border-radius:22px;padding:1.3rem 1.4rem;background:linear-gradient(135deg,#edf9f1,#ffffff 72%);box-shadow:0 8px 28px rgba(42,66,100,.06)}
     .hero-title{font-size:1.55rem;font-weight:800;letter-spacing:-.04em;color:#155c3b}.hero-copy{color:#69778a;margin-top:.25rem}
-    .stat{background:#fff;border:1px solid var(--line);border-radius:18px;padding:1rem 1.05rem;min-height:104px;box-shadow:0 4px 18px rgba(42,66,100,.045)}.stat-label{color:#58665f;font-size:.72rem}.stat-value{font-size:1.55rem;font-weight:800;margin:.2rem 0;color:#202938}.stat-sub{color:#5f6f66;font-size:.68rem}
+    .stat{background:#fff;border:1px solid var(--line);border-radius:18px;padding:1rem 1.05rem;min-height:104px;box-shadow:0 4px 18px rgba(42,66,100,.045)}.stat-label{color:#748093;font-size:.72rem}.stat-value{font-size:1.55rem;font-weight:800;margin:.2rem 0;color:#202938}.stat-sub{color:#9aa3b1;font-size:.68rem}
     .action-card{min-height:130px;border:1px solid var(--line);background:#fff;border-radius:18px;padding:1rem;box-shadow:0 5px 20px rgba(42,66,100,.045)}.action-icon{width:36px;height:36px;border-radius:11px;background:#eaf7ef;color:#198754;display:flex;align-items:center;justify-content:center;font-weight:800;margin-bottom:.75rem}.action-title{font-weight:750;color:#243044}.action-desc{color:#788394;font-size:.75rem;line-height:1.45;margin-top:.25rem}
-    .premium-card{border:1px solid var(--line);background:#fff;border-radius:19px;padding:1.05rem 1.15rem;box-shadow:0 5px 20px rgba(42,66,100,.045)}.eyebrow{color:#69756e;font-size:.64rem;text-transform:uppercase;letter-spacing:.12em;font-weight:700}.big-number{font-size:2rem;font-weight:800;letter-spacing:-.04em;color:#1f3d63}.muted{color:#59675f!important;font-size:.8rem}.tiny{color:#5f6f66!important;font-size:.68rem}
+    .premium-card{border:1px solid var(--line);background:#fff;border-radius:19px;padding:1.05rem 1.15rem;box-shadow:0 5px 20px rgba(42,66,100,.045)}.eyebrow{color:#7c8797;font-size:.64rem;text-transform:uppercase;letter-spacing:.12em;font-weight:700}.big-number{font-size:2rem;font-weight:800;letter-spacing:-.04em;color:#1f3d63}.muted{color:#778293;font-size:.78rem}.tiny{color:#9aa3b1;font-size:.66rem}
     .status-pill{display:inline-block;border:1px solid #dce3ec;background:#f8fafc;border-radius:999px;padding:.18rem .52rem;font-size:.64rem;color:#657084}.glow{color:#198754}
     .stButton>button{border-radius:11px!important;border:1px solid #dbe2eb!important;background:#fff!important;color:#263244!important;font-weight:600;min-height:2.35rem}.stButton>button:hover{border-color:#a9c6ef!important;background:#f3fbf6!important}.stButton>button[kind="primary"]{background:#198754!important;border:0!important;color:#fff!important;box-shadow:0 7px 18px rgba(25,135,84,.18)}
     .stTextInput input,.stTextArea textarea,.stNumberInput input{background:#fff!important;border:1px solid #dce3eb!important;color:#202938!important;border-radius:11px!important}.stSelectbox>div>div{background:#fff!important;border-color:#dce3eb!important}.stFileUploader{background:#fff;border:1px dashed #cbd5e1;border-radius:15px;padding:.2rem}
@@ -71,16 +71,47 @@ def inject_css():
     [data-baseweb="select"]>div{background:#ffffff!important;color:#34443a!important;border-color:#dce3eb!important}
     [data-baseweb="select"] *{color:#34443a!important}
     [role="listbox"], [role="option"]{background:#ffffff!important;color:#34443a!important}
-    [data-testid="stMarkdownContainer"], [data-testid="stMarkdownContainer"] p, [data-testid="stMarkdownContainer"] li{color:#34443a}
-    /* Plain-text reports must be clearly readable too. */
-    [data-testid="stText"], [data-testid="stText"] pre, [data-testid="stText"] div, pre{
+    /* Final selectbox readability: selected value AND opened options must stay dark on white. */
+    [data-baseweb="select"],
+    [data-baseweb="select"] > div,
+    [data-baseweb="select"] [role="combobox"]{
+        background:#ffffff!important;
+        color:#253247!important;
+        border-color:#cfe0d7!important;
+    }
+    [data-baseweb="select"] span,
+    [data-baseweb="select"] div,
+    [data-baseweb="select"] input,
+    [data-baseweb="select"] svg{
+        color:#253247!important;
+        fill:#253247!important;
+        opacity:1!important;
+    }
+    [data-baseweb="popover"],
+    [data-baseweb="menu"],
+    [data-baseweb="menu"] > div,
+    [role="listbox"]{
+        background:#ffffff!important;
+        color:#253247!important;
+        border-color:#dce3eb!important;
+    }
+    [data-baseweb="menu"] li,
+    [role="option"],
+    [role="option"] *{
+        background:#ffffff!important;
         color:#253247!important;
         opacity:1!important;
     }
-    [data-testid="stCaptionContainer"], [data-testid="stCaptionContainer"] p{
-        color:#5f6f66!important;
-        opacity:1!important;
+    [role="option"][aria-selected="true"],
+    [role="option"][data-highlighted="true"]{
+        background:#eaf7ef!important;
+        color:#155c3b!important;
     }
+    [role="option"][aria-selected="true"] *,
+    [role="option"][data-highlighted="true"] *{
+        color:#155c3b!important;
+    }
+    [data-testid="stMarkdownContainer"], [data-testid="stMarkdownContainer"] p, [data-testid="stMarkdownContainer"] li{color:#34443a}
     [data-testid="stHeader"]{background:#f8fbf9!important}
     [data-testid="stSidebar"] *{color:#34443a}
     [data-testid="stSidebar"] .stButton>button{background:#ffffff!important;color:#34443a!important}
