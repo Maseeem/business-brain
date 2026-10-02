@@ -1,5 +1,6 @@
 import sqlite3
 import os
+import html
 from datetime import datetime
 import streamlit as st
 from dotenv import load_dotenv
@@ -1334,7 +1335,11 @@ elif page == "WhatsApp":
     report_role=role if role in {"Owner","Manager","Employee"} else "Owner"
     preview_categories={"Owner":["sales","inventory","supplier","receipts"],"Manager":["sales","inventory","supplier","receipts"],"Employee":["sales"]}[report_role]
     report=build_daily_report(report_role,business_id,categories=preview_categories)
-    st.text(format_daily_report(report))
+    report_text = html.escape(format_daily_report(report)).replace("\n", "<br>")
+    st.markdown(
+        f"<div style='background:#ffffff;border:1px solid #dfe9e3;border-radius:14px;padding:14px 16px;color:#253247;font-size:.94rem;line-height:1.55;font-family:Inter,system-ui,sans-serif'>{report_text}</div>",
+        unsafe_allow_html=True,
+    )
     recipients=(settings.get("role_recipients") or {}).get(report_role,[])
     if st.button("Send Daily Report Now",type="primary",use_container_width=True):
         if not recipients:
