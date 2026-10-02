@@ -71,46 +71,6 @@ def inject_css():
     [data-baseweb="select"]>div{background:#ffffff!important;color:#34443a!important;border-color:#dce3eb!important}
     [data-baseweb="select"] *{color:#34443a!important}
     [role="listbox"], [role="option"]{background:#ffffff!important;color:#34443a!important}
-    /* Final selectbox readability: selected value AND opened options must stay dark on white. */
-    [data-baseweb="select"],
-    [data-baseweb="select"] > div,
-    [data-baseweb="select"] [role="combobox"]{
-        background:#ffffff!important;
-        color:#253247!important;
-        border-color:#cfe0d7!important;
-    }
-    [data-baseweb="select"] span,
-    [data-baseweb="select"] div,
-    [data-baseweb="select"] input,
-    [data-baseweb="select"] svg{
-        color:#253247!important;
-        fill:#253247!important;
-        opacity:1!important;
-    }
-    [data-baseweb="popover"],
-    [data-baseweb="menu"],
-    [data-baseweb="menu"] > div,
-    [role="listbox"]{
-        background:#ffffff!important;
-        color:#253247!important;
-        border-color:#dce3eb!important;
-    }
-    [data-baseweb="menu"] li,
-    [role="option"],
-    [role="option"] *{
-        background:#ffffff!important;
-        color:#253247!important;
-        opacity:1!important;
-    }
-    [role="option"][aria-selected="true"],
-    [role="option"][data-highlighted="true"]{
-        background:#eaf7ef!important;
-        color:#155c3b!important;
-    }
-    [role="option"][aria-selected="true"] *,
-    [role="option"][data-highlighted="true"] *{
-        color:#155c3b!important;
-    }
     [data-testid="stMarkdownContainer"], [data-testid="stMarkdownContainer"] p, [data-testid="stMarkdownContainer"] li{color:#34443a}
     [data-testid="stHeader"]{background:#f8fbf9!important}
     [data-testid="stSidebar"] *{color:#34443a}
@@ -314,77 +274,12 @@ def inject_css():
         color:#253247!important;
     }
 
-    /* FINAL SELECTBOX FIX — only the closed selected-value box. */
-    [data-testid="stSelectbox"] [data-baseweb="select"],
-    [data-testid="stSelectbox"] [data-baseweb="select"] > div,
-    [data-testid="stSelectbox"] [data-baseweb="select"] > div > div,
-    [data-testid="stSelectbox"] [data-baseweb="select"] [role="combobox"] {
-        background:#ffffff !important;
-        color:#17212b !important;
-        opacity:1 !important;
-        color-scheme:light !important;
-    }
-
-    [data-testid="stSelectbox"] [data-baseweb="select"] *,
-    [data-testid="stSelectbox"] [data-baseweb="select"] span,
-    [data-testid="stSelectbox"] [data-baseweb="select"] div[class*="singleValue"],
-    [data-testid="stSelectbox"] [data-baseweb="select"] div[class*="SingleValue"],
-    [data-testid="stSelectbox"] [data-baseweb="select"] [aria-live="polite"],
-    [data-testid="stSelectbox"] [data-baseweb="select"] input {
-        color:#17212b !important;
-        -webkit-text-fill-color:#17212b !important;
-        opacity:1 !important;
-        visibility:visible !important;
-        text-shadow:none !important;
-        filter:none !important;
-        mix-blend-mode:normal !important;
-    }
-
-    [data-testid="stSelectbox"] [data-baseweb="select"] svg {
-        color:#17212b !important;
-        fill:#17212b !important;
-        opacity:1 !important;
-    }
-
-    /* Open-menu options only: keep their existing white surface, dark text. */
-    [data-testid="stSelectbox"] ~ [data-baseweb="popover"] [role="option"],
-    [data-baseweb="popover"] [role="option"],
-    [data-baseweb="menu"] [role="option"] {
-        color:#17212b !important;
-        -webkit-text-fill-color:#17212b !important;
-        opacity:1 !important;
-    }
-    [data-baseweb="popover"] [role="option"] *,
-    [data-baseweb="menu"] [role="option"] * {
-        color:#17212b !important;
-        -webkit-text-fill-color:#17212b !important;
-        opacity:1 !important;
-    }
-
-    /* ISSUE TYPE ONLY — selected value inside the issue-report selectbox */
-    [data-testid="stForm"] [data-testid="stSelectbox"] [data-baseweb="select"],
-    [data-testid="stForm"] [data-testid="stSelectbox"] [data-baseweb="select"] > div,
-    [data-testid="stForm"] [data-testid="stSelectbox"] [data-baseweb="select"] [role="combobox"] {
-        background:#ffffff !important;
-        color:#17212b !important;
-        opacity:1 !important;
-        visibility:visible !important;
-    }
-    [data-testid="stForm"] [data-testid="stSelectbox"] [data-baseweb="select"] div[class*="singleValue"],
-    [data-testid="stForm"] [data-testid="stSelectbox"] [data-baseweb="select"] div[class*="SingleValue"],
-    [data-testid="stForm"] [data-testid="stSelectbox"] [data-baseweb="select"] [aria-live="polite"],
-    [data-testid="stForm"] [data-testid="stSelectbox"] [data-baseweb="select"] span,
-    [data-testid="stForm"] [data-testid="stSelectbox"] [data-baseweb="select"] > div > div > div {
-        color:#17212b !important;
-        -webkit-text-fill-color:#17212b !important;
-        opacity:1 !important;
-        visibility:visible !important;
-        font-weight:600 !important;
-        text-shadow:0 0 0 #17212b !important;
-    }
-    [data-testid="stForm"] [data-testid="stSelectbox"] [data-baseweb="select"] svg {
-        color:#17212b !important;
-        fill:#17212b !important;
+    /* Text must remain readable everywhere. */
+    [data-testid="stAppViewContainer"] p,
+    [data-testid="stAppViewContainer"] span,
+    [data-testid="stAppViewContainer"] label,
+    [data-testid="stAppViewContainer"] div{
+        --darkreader-text-color:#253247;
     }
     </style>
     """,unsafe_allow_html=True)
