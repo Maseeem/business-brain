@@ -1,6 +1,5 @@
 import sqlite3
 import os
-import html
 from datetime import datetime
 import streamlit as st
 from dotenv import load_dotenv
@@ -751,30 +750,35 @@ elif page == "Smart Sale":
                         st.markdown(f"**{product['name']}**")
                         st.caption(f"Requested × {qty:g} · {unit}")
                     with h2:
+                        st.markdown("**PRICE**")
                         if price is None:
-                            st.markdown("**PRICE**")
-                            new_price=st.number_input("Set price", min_value=0.0, step=1.0, value=0.0, key=f"sale_price_{product['id']}", label_visibility="collapsed")
-                            if st.button("Save price", key=f"save_sale_price_{product['id']}", use_container_width=True, disabled=not can("pricing")):
-                                require_permission("pricing")
-                                if new_price <= 0:
-                                    st.error("Enter a real selling price greater than 0.")
-                                else:
-                                    update_product(product["id"], price=float(new_price), business_id=business_id)
-                                    log_activity("Product price updated", f"{product['name']} · Rs. {new_price:,.2f}", st.session_state.user["name"], business_id)
-                                    st.success("Price saved.")
-                                    st.rerun()
-                        else:
-                            st.markdown("**PRICE**")
-                            st.markdown(f"Rs. {float(price):,.2f}")
-                            with st.popover("Edit price"):
-                                edited_price=st.number_input("Selling price", min_value=0.0, step=1.0, value=float(price), key=f"edit_sale_price_{product['id']}")
-                                if st.button("Save", key=f"save_edit_price_{product['id']}", use_container_width=True, disabled=not can("pricing")):
+                            if can("pricing"):
+                                new_price=st.number_input("Set price", min_value=0.0, step=1.0, value=0.0, key=f"sale_price_{product['id']}", label_visibility="collapsed")
+                                if st.button("Save price", key=f"save_sale_price_{product['id']}", use_container_width=True):
                                     require_permission("pricing")
-                                    if edited_price <= 0: st.error("Enter a price greater than 0.")
+                                    if new_price <= 0:
+                                        st.error("Enter a real selling price greater than 0.")
                                     else:
-                                        update_product(product["id"], price=float(edited_price), business_id=business_id)
-                                        st.success("Price updated.")
+                                        update_product(product["id"], price=float(new_price), business_id=business_id)
+                                        log_activity("Product price updated", f"{product['name']} · Rs. {new_price:,.2f}", st.session_state.user["name"], business_id)
+                                        st.success("Price saved.")
                                         st.rerun()
+                            else:
+                                st.caption("Price not set · Manager/Owner must set the selling price.")
+                        else:
+                            st.markdown(f"Rs. {float(price):,.2f}")
+                            if can("pricing"):
+                                with st.popover("Edit price"):
+                                    edited_price=st.number_input("Selling price", min_value=0.0, step=1.0, value=float(price), key=f"edit_sale_price_{product['id']}")
+                                    if st.button("Save Edits", key=f"save_edit_price_{product['id']}", use_container_width=True):
+                                        require_permission("pricing")
+                                        if edited_price <= 0:
+                                            st.error("Enter a price greater than 0.")
+                                        else:
+                                            update_product(product["id"], price=float(edited_price), business_id=business_id)
+                                            log_activity("Product price updated", f"{product['name']} · Rs. {edited_price:,.2f}", st.session_state.user["name"], business_id)
+                                            st.success("Price updated.")
+                                            st.rerun()
                     with h3:
                         st.markdown("**STOCK**")
                         if stock <= 0:
@@ -789,6 +793,16 @@ elif page == "Smart Sale":
                         st.warning(f"Not enough stock. Reduce the quantity or update stock before confirming.")
                     else:
                         st.caption(f"Line total · Rs. {subtotal:,.2f}")
+
+                    # Customer may cancel/remove one specific product without clearing the whole order.
+                    if st.button("Cancel this item", key=f"cancel_sale_item_{product['id']}", use_container_width=True):
+                        st.session_state.sale_cart = [
+                            x for x in st.session_state.sale_cart
+                            if int(x.get("product_id", -1)) != int(product["id"])
+                        ]
+                        st.session_state.sale_edit_widget_version = int(st.session_state.get("sale_edit_widget_version", 0)) + 1
+                        st.success(f"{product['name']} removed from this order.")
+                        st.rerun()
             st.session_state.sale_cart=refreshed
             priced=[x for x in refreshed if x.get("unit_price") is not None]
             total=round(sum(float(x["subtotal"]) for x in priced),2)
@@ -1294,7 +1308,7 @@ elif page == "WhatsApp":
     require_permission("whatsapp")
     business_id=current_business_id()
     role=st.session_state.user.get("role","Employee")
-    page_header("WhatsApp","Role-based reports, issue reporting and operational escalation.","Business Communication")
+    page_header("WhatsApp","Role-based reports, issue reporting and operational escalation.","WhatsApp")
     settings=get_whatsapp_settings(business_id)
     status=configuration_status()
     if status["missing"]:
@@ -1335,11 +1349,7 @@ elif page == "WhatsApp":
     report_role=role if role in {"Owner","Manager","Employee"} else "Owner"
     preview_categories={"Owner":["sales","inventory","supplier","receipts"],"Manager":["sales","inventory","supplier","receipts"],"Employee":["sales"]}[report_role]
     report=build_daily_report(report_role,business_id,categories=preview_categories)
-    report_text = html.escape(format_daily_report(report)).replace("\n", "<br>")
-    st.markdown(
-        f"<div style='background:#ffffff;border:1px solid #dfe9e3;border-radius:14px;padding:14px 16px;color:#253247;font-size:.94rem;line-height:1.55;font-family:Inter,system-ui,sans-serif'>{report_text}</div>",
-        unsafe_allow_html=True,
-    )
+    st.text(format_daily_report(report))
     recipients=(settings.get("role_recipients") or {}).get(report_role,[])
     if st.button("Send Daily Report Now",type="primary",use_container_width=True):
         if not recipients:
