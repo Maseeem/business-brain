@@ -11,6 +11,7 @@ from database import (
     get_daily_operations, list_products, update_product, bulk_add_products, get_sale, list_supplier_orders, approve_supplier_order,
     save_confirmed_sale, find_supplier, find_supplier_for_product, create_supplier_order,
     create_missing_product_request, list_missing_product_requests, review_missing_product_request,
+    create_whatsapp_issue_report, list_whatsapp_issue_reports, review_whatsapp_issue_report,
     get_whatsapp_settings, save_whatsapp_settings, update_whatsapp_status,
 )
 from agent import generate_sop_from_inputs, transcribe_audio_to_text
@@ -98,6 +99,7 @@ def _ask_brain_allowed_intent(role, intent):
 
 
 def _save_process_from_editor(values, existing_id=None, reason="Updated process"):
+    require_permission("edit")
     if existing_id:
         changed = update_process(existing_id, values, st.session_state.user["id"], st.session_state.user["name"], reason)
         if changed:
@@ -257,7 +259,7 @@ _PAGE_PERMISSIONS = {
 _required_page_permission = _PAGE_PERMISSIONS.get(page)
 if _required_page_permission and not can(_required_page_permission):
     st.error("You do not have permission to access this page.")
-    st.session_state.page = "Dashboard" if can("dashboard") else "Smart Sale"
+    st.session_state.page = "Dashboard"
     st.stop()
 
 # ---------- Dashboard ----------
@@ -269,86 +271,115 @@ if page == "Dashboard":
     # components; only the Dashboard content is intentionally restored here.
     daily = get_daily_operations(business_id)
     products = list_products(business_id)
-
-    today_sales = float(daily.get("sales_total", 0) or 0)
-    today_orders = int(daily.get("sales_count", 0) or 0)
-    low_stock = list(daily.get("low_stock", []) or [])
-    low_stock_count = len(low_stock)
-
-    missing_price = [p for p in products if p.get("active", 1) and p.get("price") is None]
-    out_of_stock = [p for p in products if p.get("active", 1) and float(p.get("stock_quantity", 0) or 0) <= 0]
-
-    pending_receipts = 0
-    try:
-        with sqlite3.connect("business_brain.db") as conn:
-            row = conn.execute(
-                "SELECT COUNT(*) FROM receipt_verifications WHERE business_id=? AND status IN ('Needs Review','Possible mismatch','Unclear')",
-                (business_id,),
-            ).fetchone()
-            pending_receipts = int(row[0] or 0)
-    except Exception:
-        pending_receipts = 0
-
-    pending_supplier_orders = int(daily.get("pending_supplier_orders", 0) or 0)
-    attention_count = len(out_of_stock) + len([p for p in low_stock if p not in out_of_stock]) + len(missing_price) + pending_receipts + pending_supplier_orders
-
-    cols = st.columns(4)
-    stats = [
-        ("Today's Sales", f"Rs. {today_sales:,.2f}", "Confirmed sales today"),
-        ("Today's Orders", today_orders, "Confirmed orders today"),
-        ("Low Stock", low_stock_count, "Products at or below minimum"),
-        ("Need Attention", attention_count, "Items needing review"),
-    ]
-    for col, (label, value, sub) in zip(cols, stats):
-        with col:
-            stat_card(label, value, sub)
-
-    st.markdown("<div class='section-gap'></div>", unsafe_allow_html=True)
-    left, right = st.columns([1.55, 1], gap="large")
-
-    with left:
-        st.markdown("### Need Attention")
-        attention_items = []
-        for product in out_of_stock:
-            attention_items.append(("Out of stock", f"{product['name']} is out of stock.", "Inventory", f"attention_inventory_{product['id']}"))
-        for product in low_stock:
-            if product in out_of_stock:
-                continue
-            attention_items.append(("Low stock", f"{product['name']} · {float(product.get('stock_quantity', 0) or 0):g} {product.get('unit') or 'unit'} remaining.", "Inventory", f"attention_low_{product['id']}"))
-        for product in missing_price:
-            attention_items.append(("Missing price", f"{product['name']} has no selling price.", "Inventory", f"attention_price_{product['id']}"))
-        if pending_receipts:
-            attention_items.append(("Receipt verification pending", f"{pending_receipts} receipt verification(s) need review.", "Receipts", "attention_receipts"))
-        if pending_supplier_orders:
-            attention_items.append(("Supplier approval pending", f"{pending_supplier_orders} supplier order(s) need human approval.", "Suppliers", "attention_suppliers"))
-
-        if not attention_items:
-            empty_state("Nothing needs attention", "Your current business data has no outstanding dashboard actions.")
-        else:
-            for kind, detail, target, key in attention_items:
-                c1, c2 = st.columns([4, 1.25])
-                with c1:
-                    st.markdown(f"**{kind}**")
-                    st.caption(detail)
-                with c2:
-                    if st.button("Review", key=key, use_container_width=True):
-                        st.session_state.page = target
-                        st.rerun()
-
-    with right:
+    role = st.session_state.user.get("role", "Employee")
+    if role == "Manager":
+        # Operational dashboard only; reuse the same live data and visual components.
+        pending_missing = list_missing_product_requests(business_id, status="Pending", limit=50)
+        cols = st.columns(4)
+        for c,(a,b,d) in zip(cols, [("Today Sales", "Rs. 0", "Confirmed sales"),("Today Orders", "0", "Confirmed orders"),("Low Stock", "0", "Products at/below minimum"),("Missing Requests", str(len(pending_missing)), "Pending review")]):
+            with c: stat_card(a,b,d)
         st.markdown("### Quick Actions")
-        quick_actions = [
-            ("＋", "New Sale", "Start a new Smart Sale order.", "Smart Sale", True, "dashboard_new_sale"),
-            ("▦", "Inventory", "Review stock and product prices.", "Inventory", True, "dashboard_inventory"),
-            ("🧾", "Check Receipt", "Review receipt verification.", "Receipts", True, "dashboard_receipt"),
-            ("✦", "Ask Brain", "Ask an evidence-backed business question.", "Ask Brain", True, "dashboard_brain"),
-        ]
-        for icon, title, desc, target, allowed, key in quick_actions:
-            st.markdown(f"<div class='action-card'><div class='action-icon'>{icon}</div><div class='action-title'>{title}</div><div class='action-desc'>{desc}</div></div>", unsafe_allow_html=True)
-            if allowed and st.button(f"Open {title}", key=key, use_container_width=True):
-                st.session_state.page = target
-                st.rerun()
+        q=st.columns(4)
+        for c,label,target in zip(q,["Inventory","Receipts","Daily Operations","Processes"],["Inventory","Receipts","Daily Operations","Processes"]):
+            with c:
+                if st.button(label,key=f"mgr_dash_{target}",use_container_width=True): st.session_state.page=target; st.rerun()
+        st.markdown("### Operational summary")
+        st.info("Use Daily Operations for live low-stock, supplier/order status, receipt verification and missing-product requests.")
+        # Keep the existing owner dashboard untouched below.
+    elif role == "Employee":
+        recent = list(daily.get("recent_sales", []) or [])
+        cols=st.columns(3)
+        for c,(a,b,d) in zip(cols,[("Today Sales",f"Rs. {float(daily.get('sales_total',0) or 0):,.0f}","Sales total"),("Today Orders",str(int(daily.get('sales_count',0) or 0)),"Confirmed orders"),("Recent Sales",str(len(recent)),"Latest transactions")]):
+            with c: stat_card(a,b,d)
+        st.markdown("### Quick Actions")
+        q=st.columns(3)
+        for c,label,target in zip(q,["Smart Sale","Receipts","Ask Brain"],["Smart Sale","Receipts","Ask Brain"]):
+            with c:
+                if st.button(label,key=f"emp_dash_{target}",use_container_width=True): st.session_state.page=target; st.rerun()
+        st.markdown("### Sales & customer service")
+        st.info("Use Smart Sale for transactions, Receipts for completed sales, and Processes / Ask Brain for approved sales and customer-service guidance.")
+    else:
+        pass
 
+    if role in {"Owner", "Admin"}:
+        today_sales = float(daily.get("sales_total", 0) or 0)
+        today_orders = int(daily.get("sales_count", 0) or 0)
+        low_stock = list(daily.get("low_stock", []) or [])
+        low_stock_count = len(low_stock)
+
+        missing_price = [p for p in products if p.get("active", 1) and p.get("price") is None]
+        out_of_stock = [p for p in products if p.get("active", 1) and float(p.get("stock_quantity", 0) or 0) <= 0]
+
+        pending_receipts = 0
+        try:
+            with sqlite3.connect("business_brain.db") as conn:
+                row = conn.execute(
+                    "SELECT COUNT(*) FROM receipt_verifications WHERE business_id=? AND status IN ('Needs Review','Possible mismatch','Unclear')",
+                    (business_id,),
+                ).fetchone()
+                pending_receipts = int(row[0] or 0)
+        except Exception:
+            pending_receipts = 0
+
+        pending_supplier_orders = int(daily.get("pending_supplier_orders", 0) or 0)
+        attention_count = len(out_of_stock) + len([p for p in low_stock if p not in out_of_stock]) + len(missing_price) + pending_receipts + pending_supplier_orders
+
+        cols = st.columns(4)
+        stats = [
+            ("Today's Sales", f"Rs. {today_sales:,.2f}", "Confirmed sales today"),
+            ("Today's Orders", today_orders, "Confirmed orders today"),
+            ("Low Stock", low_stock_count, "Products at or below minimum"),
+            ("Need Attention", attention_count, "Items needing review"),
+        ]
+        for col, (label, value, sub) in zip(cols, stats):
+            with col:
+                stat_card(label, value, sub)
+
+        st.markdown("<div class='section-gap'></div>", unsafe_allow_html=True)
+        left, right = st.columns([1.55, 1], gap="large")
+
+        with left:
+            st.markdown("### Need Attention")
+            attention_items = []
+            for product in out_of_stock:
+                attention_items.append(("Out of stock", f"{product['name']} is out of stock.", "Inventory", f"attention_inventory_{product['id']}"))
+            for product in low_stock:
+                if product in out_of_stock:
+                    continue
+                attention_items.append(("Low stock", f"{product['name']} · {float(product.get('stock_quantity', 0) or 0):g} {product.get('unit') or 'unit'} remaining.", "Inventory", f"attention_low_{product['id']}"))
+            for product in missing_price:
+                attention_items.append(("Missing price", f"{product['name']} has no selling price.", "Inventory", f"attention_price_{product['id']}"))
+            if pending_receipts:
+                attention_items.append(("Receipt verification pending", f"{pending_receipts} receipt verification(s) need review.", "Receipts", "attention_receipts"))
+            if pending_supplier_orders:
+                attention_items.append(("Supplier approval pending", f"{pending_supplier_orders} supplier order(s) need human approval.", "Suppliers", "attention_suppliers"))
+
+            if not attention_items:
+                empty_state("Nothing needs attention", "Your current business data has no outstanding dashboard actions.")
+            else:
+                for kind, detail, target, key in attention_items:
+                    c1, c2 = st.columns([4, 1.25])
+                    with c1:
+                        st.markdown(f"**{kind}**")
+                        st.caption(detail)
+                    with c2:
+                        if st.button("Review", key=key, use_container_width=True):
+                            st.session_state.page = target
+                            st.rerun()
+
+        with right:
+            st.markdown("### Quick Actions")
+            quick_actions = [
+                ("＋", "New Sale", "Start a new Smart Sale order.", "Smart Sale", True, "dashboard_new_sale"),
+                ("▦", "Inventory", "Review stock and product prices.", "Inventory", True, "dashboard_inventory"),
+                ("🧾", "Check Receipt", "Review receipt verification.", "Receipts", True, "dashboard_receipt"),
+                ("✦", "Ask Brain", "Ask an evidence-backed business question.", "Ask Brain", True, "dashboard_brain"),
+            ]
+            for icon, title, desc, target, allowed, key in quick_actions:
+                st.markdown(f"<div class='action-card'><div class='action-icon'>{icon}</div><div class='action-title'>{title}</div><div class='action-desc'>{desc}</div></div>", unsafe_allow_html=True)
+                if allowed and st.button(f"Open {title}", key=key, use_container_width=True):
+                    st.session_state.page = target
+                    st.rerun()
 # ---------- Record Process ----------
 elif page == "Record Process":
     require_permission("record_process")
@@ -1260,72 +1291,118 @@ elif page == "Activity":
 # ---------- WhatsApp ----------
 elif page == "WhatsApp":
     require_permission("whatsapp")
-    business_id = current_business_id()
-    page_header("WhatsApp", "Configure admin-only daily reporting and test the WhatsApp Business connection.", "Admin")
-    settings = get_whatsapp_settings(business_id)
-    status = configuration_status()
-    st.markdown("### WhatsApp reporting")
+    business_id=current_business_id()
+    role=st.session_state.user.get("role","Employee")
+    page_header("WhatsApp","Role-based reports, issue reporting and operational escalation.","WhatsApp")
+    settings=get_whatsapp_settings(business_id)
+    status=configuration_status()
     if status["missing"]:
-        st.warning("WhatsApp Cloud API is not fully configured. Add the required Streamlit secrets/environment variables before sending messages.")
-        st.caption("Required: WHATSAPP_ACCESS_TOKEN, WHATSAPP_PHONE_NUMBER_ID, WHATSAPP_BUSINESS_ACCOUNT_ID")
+        st.info("WhatsApp is not configured yet. Contact the Owner to complete WhatsApp setup.")
+        st.caption("Required secrets: WHATSAPP_ACCESS_TOKEN, WHATSAPP_PHONE_NUMBER_ID, WHATSAPP_BUSINESS_ACCOUNT_ID")
     else:
         st.success("WhatsApp Cloud API configuration is available.")
-    with st.form("whatsapp_settings"):
-        enabled = st.checkbox("Enable daily reports", value=bool(settings.get("enabled")))
-        admin_recipients = st.text_area("Admin / Owner recipients", value=", ".join((settings.get("role_recipients") or {}).get("Owner", []) or (settings.get("recipients") or [])), placeholder="923001234567, 923001234568")
-        manager_recipients = st.text_area("Manager recipients", value=", ".join((settings.get("role_recipients") or {}).get("Manager", [])), placeholder="Optional")
-        employee_recipients = st.text_area("Employee recipients", value=", ".join((settings.get("role_recipients") or {}).get("Employee", [])), placeholder="Optional")
-        categories = st.multiselect("Report categories", ["sales", "inventory", "supplier", "receipts", "activity"], default=[x for x in settings.get("categories", []) if x in {"sales", "inventory", "supplier", "receipts", "activity"}] or ["sales", "inventory", "supplier", "receipts"])
-        saved = st.form_submit_button("Save WhatsApp settings", type="primary", use_container_width=True)
-    if saved:
-        role_recipients = {"Owner": [x.strip() for x in admin_recipients.split(",") if x.strip()], "Admin": [x.strip() for x in admin_recipients.split(",") if x.strip()], "Manager": [x.strip() for x in manager_recipients.split(",") if x.strip()], "Employee": [x.strip() for x in employee_recipients.split(",") if x.strip()]}
-        save_whatsapp_settings(business_id, enabled, role_recipients["Owner"], categories, role_recipients)
-        log_activity("WhatsApp settings updated", "Daily reporting settings changed", st.session_state.user["name"], business_id)
-        st.success("WhatsApp reporting settings saved.")
-        st.rerun()
 
-    st.markdown("### Test connection")
-    test_recipient = st.text_input("Test recipient", value=(settings.get("recipients") or [""])[0] if settings.get("recipients") else "")
-    if st.button("Send test message", use_container_width=True):
-        try:
-            result = test_connection(test_recipient)
-            update_whatsapp_status(business_id, "Success", "", __import__('datetime').datetime.now().isoformat(timespec="seconds"))
-            st.success("WhatsApp test message sent successfully.")
-        except Exception as exc:
-            update_whatsapp_status(business_id, "Failed", str(exc), "")
-            st.error(str(exc))
+    if role in {"Owner","Admin"} and can("whatsapp_admin"):
+        st.markdown("### WhatsApp administration")
+        with st.form("whatsapp_settings"):
+            enabled=st.checkbox("Enable daily reports",value=bool(settings.get("enabled")))
+            owner_recipients=st.text_area("Owner recipients",value=", ".join((settings.get("role_recipients") or {}).get("Owner",[]) or settings.get("recipients",[])),placeholder="923001234567")
+            manager_recipients=st.text_area("Manager recipients",value=", ".join((settings.get("role_recipients") or {}).get("Manager",[])))
+            employee_recipients=st.text_area("Employee recipients",value=", ".join((settings.get("role_recipients") or {}).get("Employee",[])))
+            categories=st.multiselect("Report categories",["sales","inventory","supplier","receipts","activity"],default=[x for x in settings.get("categories",[]) if x in {"sales","inventory","supplier","receipts","activity"}] or ["sales","inventory","supplier","receipts"])
+            saved=st.form_submit_button("Save WhatsApp settings",type="primary",use_container_width=True)
+        if saved:
+            require_permission("whatsapp_admin")
+            rr={"Owner":[x.strip() for x in owner_recipients.split(",") if x.strip()],"Admin":[x.strip() for x in owner_recipients.split(",") if x.strip()],"Manager":[x.strip() for x in manager_recipients.split(",") if x.strip()],"Employee":[x.strip() for x in employee_recipients.split(",") if x.strip()]}
+            save_whatsapp_settings(business_id,enabled,rr["Owner"],categories,rr)
+            log_activity("WhatsApp settings updated","Daily reporting settings changed",st.session_state.user["name"],business_id)
+            st.success("WhatsApp settings saved.")
+            st.rerun()
+
+        st.markdown("### Test connection")
+        test_recipient=st.text_input("Test recipient",value=(settings.get("recipients") or [""])[0] if settings.get("recipients") else "")
+        if st.button("Send test message",use_container_width=True):
+            try:
+                test_connection(test_recipient)
+                update_whatsapp_status(business_id,"Success","",datetime.now().isoformat(timespec="seconds"))
+                st.success("WhatsApp test message sent successfully.")
+            except Exception:
+                update_whatsapp_status(business_id,"Failed","WhatsApp connection could not be verified. Check the configuration and try again.","")
+                st.error("WhatsApp connection could not be verified. Check the configuration and try again.")
 
     st.markdown("### Daily report")
-    role_for_report = st.selectbox("Report preview / manual send", ["Owner", "Manager", "Employee"], index=0)
-    preview_categories = {"Owner": ["sales", "inventory", "supplier", "receipts"], "Manager": ["sales", "inventory", "supplier", "receipts"], "Employee": ["sales"]}[role_for_report]
-    report = build_daily_report(role_for_report, business_id, categories=preview_categories)
+    report_role=role if role in {"Owner","Manager","Employee"} else "Owner"
+    preview_categories={"Owner":["sales","inventory","supplier","receipts"],"Manager":["sales","inventory","supplier","receipts"],"Employee":["sales"]}[report_role]
+    report=build_daily_report(report_role,business_id,categories=preview_categories)
     st.text(format_daily_report(report))
-    recipient_list = (settings.get("role_recipients") or {}).get(role_for_report, []) or ((settings.get("recipients") or []) if role_for_report in ("Owner", "Admin") else [])
-    if st.button("Send Daily Report Now", type="primary", use_container_width=True):
-        if not recipient_list:
-            st.error("No recipient is configured for this role.")
+    recipients=(settings.get("role_recipients") or {}).get(report_role,[])
+    if st.button("Send Daily Report Now",type="primary",use_container_width=True):
+        if not recipients:
+            st.error("No recipient is configured for this role. Contact the Owner to configure recipients.")
         else:
-            successes = 0
-            errors = []
-            for recipient in recipient_list:
+            sent=0
+            for recipient in recipients:
                 try:
-                    send_daily_report(role_for_report, business_id, recipient, include_pdf=True, categories=preview_categories)
-                    successes += 1
-                except Exception as exc:
-                    errors.append(str(exc))
-            if successes:
-                update_whatsapp_status(business_id, f"Sent to {successes} recipient(s)", "", __import__('datetime').datetime.now().isoformat(timespec="seconds"))
-                st.success(f"Daily report sent to {successes} recipient(s).")
-            if errors:
-                update_whatsapp_status(business_id, "Failed", "; ".join(errors)[:500], "")
-                st.error("One or more WhatsApp sends failed. Review the configuration and try again.")
+                    send_daily_report(report_role,business_id,recipient,include_pdf=True,categories=preview_categories); sent+=1
+                except Exception:
+                    pass
+            if sent: st.success(f"Daily report sent to {sent} recipient(s).")
+            else: st.error("WhatsApp report could not be sent. Check the configuration and try again.")
+    st.download_button("Download role-scoped Daily Report PDF",data=build_daily_report_pdf(report_role,business_id,categories=preview_categories),file_name=f"daily_report_{datetime.now().date().isoformat()}_{report_role.lower()}.pdf",mime="application/pdf",use_container_width=True)
 
-    st.download_button("Download role-scoped Daily Report PDF", data=build_daily_report_pdf(role_for_report, business_id, categories=preview_categories), file_name=f"daily_report_{__import__('datetime').datetime.now().date().isoformat()}_{role_for_report.lower()}.pdf", mime="application/pdf", use_container_width=True)
+    if role in {"Manager","Employee"}:
+        st.markdown("### ⚠️ Report an Issue")
+        if role=="Manager":
+            issue_types=["Inventory Problem","Low Stock Problem","Supplier Problem","Receipt Problem","Operational Problem","Other"]
+        else:
+            issue_types=["Missing Product","Stock Problem","Customer Issue","Order Issue","Sales Problem","Other"]
+        with st.form(f"issue_form_{role.lower()}"):
+            issue_type=st.selectbox("Issue type",issue_types)
+            description=st.text_area("Describe the issue",placeholder="Explain what happened and what help is needed.")
+            qty=st.number_input("Quantity (optional)",min_value=0.0,step=1.0,value=0.0)
+            send_issue=st.form_submit_button("Send Issue to Manager/Owner",type="primary",use_container_width=True)
+        if send_issue:
+            if not description.strip():
+                st.error("Please describe the issue.")
+            else:
+                try:
+                    rid=create_whatsapp_issue_report(issue_type,description,st.session_state.user["id"],st.session_state.user["name"],role,business_id,qty)
+                    # Missing Product keeps the existing pending-request workflow as the authoritative review queue.
+                    if role=="Employee" and issue_type=="Missing Product":
+                        create_missing_product_request(description.strip().splitlines()[0][:200],qty or 1,st.session_state.user["id"],st.session_state.user["name"],role,business_id)
+                    target=[]
+                    rr=settings.get("role_recipients") or {}
+                    target.extend(rr.get("Owner",[]))
+                    if role=="Employee": target.extend(rr.get("Manager",[]))
+                    message=f"Business Brain Issue\nType: {issue_type}\nFrom: {st.session_state.user['name']} ({role})\nIssue: {description.strip()}"
+                    sent=False
+                    for recipient in dict.fromkeys(target):
+                        try: send_text(recipient,message); sent=True
+                        except Exception: pass
+                    if sent: st.success("✅ Issue sent to the configured Manager/Owner WhatsApp recipient.")
+                    else: st.success("✅ Issue saved and queued for Manager/Owner review.")
+                except Exception:
+                    st.error("Issue could not be saved. Please try again.")
 
-    last_status = get_whatsapp_settings(business_id)
-    st.caption(f"Last send status: {last_status.get('last_status') or 'No sends yet'}")
-    if last_status.get("last_error"):
-        st.caption(f"Last error: {last_status['last_error']}")
+    if role in {"Owner","Manager"}:
+        st.markdown("### Pending operational issues")
+        pending=list_whatsapp_issue_reports(business_id,status="Pending",limit=50)
+        if not pending: st.caption("No pending issue reports.")
+        for issue in pending:
+            with st.container(border=True):
+                st.write(f"**{issue['issue_type']}** — {issue['requesting_user_name']} ({issue['requesting_user_role']})")
+                st.caption(issue['description'])
+                a,b=st.columns(2)
+                with a:
+                    if st.button("Resolve",key=f"resolve_issue_{issue['id']}",use_container_width=True):
+                        review_whatsapp_issue_report(issue['id'],"Resolved",st.session_state.user['id'],"Resolved",business_id); st.rerun()
+                with b:
+                    if st.button("Reject",key=f"reject_issue_{issue['id']}",use_container_width=True):
+                        review_whatsapp_issue_report(issue['id'],"Rejected",st.session_state.user['id'],"Rejected",business_id); st.rerun()
+
+    last=get_whatsapp_settings(business_id)
+    st.caption(f"Last send status: {last.get('last_status') or 'No sends yet'}")
+    if last.get('last_error'): st.caption(last['last_error'])
 
 # ---------- Settings ----------
 elif page == "Settings":

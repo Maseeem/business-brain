@@ -122,6 +122,12 @@ def init_db():
         status TEXT NOT NULL DEFAULT 'Pending', reviewed_by INTEGER DEFAULT 0, review_note TEXT DEFAULT '',
         created_at TEXT DEFAULT '', reviewed_at TEXT DEFAULT ''
     );
+    CREATE TABLE IF NOT EXISTS whatsapp_issue_reports (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, business_id INTEGER NOT NULL DEFAULT 1,
+        issue_type TEXT NOT NULL, description TEXT NOT NULL, requested_quantity REAL DEFAULT 0,
+        requesting_user_id INTEGER DEFAULT 0, requesting_user_name TEXT DEFAULT '', requesting_user_role TEXT DEFAULT 'Employee',
+        status TEXT NOT NULL DEFAULT 'Pending', created_at TEXT DEFAULT '', reviewed_by INTEGER DEFAULT 0, reviewed_at TEXT DEFAULT '', review_note TEXT DEFAULT ''
+    );
     CREATE TABLE IF NOT EXISTS business_memory (
         id INTEGER PRIMARY KEY AUTOINCREMENT, business_id INTEGER NOT NULL DEFAULT 1,
         memory_type TEXT NOT NULL DEFAULT 'fact', key TEXT NOT NULL, value TEXT NOT NULL,
@@ -1098,6 +1104,30 @@ def review_missing_product_request(request_id, status, reviewed_by=0, review_not
     c = _conn(); now = datetime.now().isoformat(timespec="seconds")
     cur = c.execute("UPDATE missing_product_requests SET status=?, reviewed_by=?, review_note=?, reviewed_at=? WHERE id=? AND business_id=? AND status='Pending'", (status, reviewed_by, str(review_note or ""), now, request_id, business_id))
     c.commit(); ok = cur.rowcount > 0; c.close(); return ok
+
+
+def create_whatsapp_issue_report(issue_type, description, requesting_user_id=0, requesting_user_name="", requesting_user_role="Employee", business_id=1, requested_quantity=0):
+    issue_type=str(issue_type or "Other").strip() or "Other"
+    description=str(description or "").strip()
+    if not description: raise ValueError("Issue description is required.")
+    c=_conn(); now=datetime.now().isoformat(timespec="seconds")
+    cur=c.execute("INSERT INTO whatsapp_issue_reports (business_id,issue_type,description,requested_quantity,requesting_user_id,requesting_user_name,requesting_user_role,status,created_at) VALUES (?,?,?,?,?,?,?,?,?)",(business_id,issue_type,description,float(requested_quantity or 0),requesting_user_id,requesting_user_name,requesting_user_role,"Pending",now))
+    c.commit(); rid=cur.lastrowid; c.close(); return rid
+
+def list_whatsapp_issue_reports(business_id=1, status=None, limit=100):
+    c=_conn()
+    if status:
+        rows=c.execute("SELECT * FROM whatsapp_issue_reports WHERE business_id=? AND status=? ORDER BY id DESC LIMIT ?",(business_id,status,limit)).fetchall()
+    else:
+        rows=c.execute("SELECT * FROM whatsapp_issue_reports WHERE business_id=? ORDER BY id DESC LIMIT ?",(business_id,limit)).fetchall()
+    c.close(); return [dict(r) for r in rows]
+
+def review_whatsapp_issue_report(report_id, status, reviewed_by=0, review_note="", business_id=1):
+    status=str(status or "").strip()
+    if status not in {"Resolved","Rejected"}: raise ValueError("Invalid issue status.")
+    c=_conn(); now=datetime.now().isoformat(timespec="seconds")
+    cur=c.execute("UPDATE whatsapp_issue_reports SET status=?,reviewed_by=?,reviewed_at=?,review_note=? WHERE id=? AND business_id=? AND status='Pending'",(status,reviewed_by,now,str(review_note or ""),report_id,business_id))
+    c.commit(); ok=cur.rowcount>0; c.close(); return ok
 
 # ---------- WhatsApp / report settings ----------
 def get_whatsapp_settings(business_id=1):
