@@ -283,11 +283,15 @@ def inject_css():
     </style>
     """,unsafe_allow_html=True)
 
-def sidebar(business):
+def sidebar(business, role="Owner"):
+    from access_control import visible_pages
+    allowed = set(visible_pages(role))
     with st.sidebar:
         st.markdown(f"<div class='brand'><div class='brand-name'>◈ Business Brain</div><div class='brand-sub'>{business['name']}</div></div>",unsafe_allow_html=True)
         st.markdown("<div class='nav-label'>Menu</div>",unsafe_allow_html=True)
         for label,icon in NAV:
+            if label not in allowed:
+                continue
             active=st.session_state.page==label
             if st.button(f"{icon}  {label}",key=f"nav_{label}",use_container_width=True,type="primary" if active else "secondary"):
                 st.session_state.page=label; st.rerun()

@@ -8,3 +8,4 @@ openpyxl>=3.1,<4
 pillow>=10,<12
 crewai>=0.203,<1
 groq>=0.31,<1
+reportlab>=4.2,<5

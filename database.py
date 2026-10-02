@@ -106,6 +106,15 @@ def init_db():
         mismatches_json TEXT DEFAULT '[]', created_by INTEGER DEFAULT 0, created_at TEXT DEFAULT '',
         FOREIGN KEY (sale_id) REFERENCES sales(id)
     );
+    CREATE TABLE IF NOT EXISTS whatsapp_settings (
+        business_id INTEGER PRIMARY KEY, enabled INTEGER NOT NULL DEFAULT 0, recipients_json TEXT DEFAULT '[]',
+        categories_json TEXT DEFAULT '[\"daily_report\"]', last_status TEXT DEFAULT '', last_error TEXT DEFAULT '', last_sent_at TEXT DEFAULT '', role_recipients_json TEXT DEFAULT '{}',
+        FOREIGN KEY (business_id) REFERENCES businesses(id)
+    );
+    CREATE TABLE IF NOT EXISTS report_preferences (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, business_id INTEGER NOT NULL, role TEXT NOT NULL, categories_json TEXT DEFAULT '[]',
+        enabled INTEGER NOT NULL DEFAULT 1, UNIQUE(business_id, role)
+    );
     CREATE TABLE IF NOT EXISTS business_memory (
         id INTEGER PRIMARY KEY AUTOINCREMENT, business_id INTEGER NOT NULL DEFAULT 1,
         memory_type TEXT NOT NULL DEFAULT 'fact', key TEXT NOT NULL, value TEXT NOT NULL,
@@ -115,6 +124,9 @@ def init_db():
     """)
 
     # Migrate older MVP databases created before the final schema.
+    _ensure_columns(c, "whatsapp_settings", {
+        "enabled": "INTEGER NOT NULL DEFAULT 0", "recipients_json": "TEXT DEFAULT '[]'", "categories_json": "TEXT DEFAULT '[\"daily_report\"]'",
+        "last_status": "TEXT DEFAULT ''", "last_error": "TEXT DEFAULT ''", "last_sent_at": "TEXT DEFAULT ''", "role_recipients_json": "TEXT DEFAULT '{}'"})
     _ensure_columns(c, "processes", {
         "business_id": "INTEGER NOT NULL DEFAULT 1", "description": "TEXT DEFAULT ''", "category": "TEXT DEFAULT 'Operations'",
         "owner": "TEXT DEFAULT 'Business Owner'", "status": "TEXT DEFAULT 'Active'", "trigger": "TEXT DEFAULT ''",
@@ -311,11 +323,11 @@ def _insert_process(c, p, now):
      json.dumps(p["inputs"]), json.dumps(p["roles"]), json.dumps(p["steps"]),
      json.dumps(p["decisions"]), json.dumps(p["exceptions"]), p["output"], json.dumps(p["tags"]), now, now))
 
-def get_business():
+def get_business(business_id=1):
     c = _conn()
-    row = c.execute("SELECT * FROM businesses WHERE id=1").fetchone()
+    row = c.execute("SELECT * FROM businesses WHERE id=?", (int(business_id),)).fetchone()
     c.close()
-    return dict(row)
+    return dict(row) if row else None
 
 def _verify_password(stored, password):
     try:
@@ -1047,3 +1059,36 @@ def approve_supplier_order(order_id, approved_by=0, business_id=1):
     c=_conn(); now=datetime.now().isoformat(timespec="seconds")
     cur=c.execute("UPDATE supplier_orders SET status='Approved', approved_by=?, updated_at=? WHERE id=? AND business_id=? AND status IN ('Draft','Pending Approval')", (approved_by,now,order_id,business_id))
     c.commit(); ok=cur.rowcount>0; c.close(); return ok
+
+
+# ---------- WhatsApp / report settings ----------
+def get_whatsapp_settings(business_id=1):
+    c = _conn(); row = c.execute("SELECT * FROM whatsapp_settings WHERE business_id=?", (business_id,)).fetchone()
+    if not row:
+        c.execute("INSERT OR IGNORE INTO whatsapp_settings (business_id) VALUES (?)", (business_id,)); c.commit()
+        row = c.execute("SELECT * FROM whatsapp_settings WHERE business_id=?", (business_id,)).fetchone()
+    c.close()
+    data = dict(row)
+    for key in ("recipients_json", "categories_json", "role_recipients_json"):
+        try: data[key[:-5]] = json.loads(data.get(key) or "[]")
+        except Exception: data[key[:-5]] = {} if key == "role_recipients_json" else []
+    return data
+
+def save_whatsapp_settings(business_id, enabled, recipients, categories, role_recipients=None):
+    c = _conn()
+    c.execute("INSERT INTO whatsapp_settings (business_id,enabled,recipients_json,categories_json,last_status,last_error,last_sent_at,role_recipients_json) VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(business_id) DO UPDATE SET enabled=excluded.enabled,recipients_json=excluded.recipients_json,categories_json=excluded.categories_json,role_recipients_json=excluded.role_recipients_json", (business_id, int(bool(enabled)), json.dumps([str(x).strip() for x in recipients if str(x).strip()]), json.dumps([str(x) for x in categories]), "", "", "", json.dumps(role_recipients or {})))
+    c.commit(); c.close()
+
+def update_whatsapp_status(business_id, status, error="", sent_at=""):
+    c = _conn(); c.execute("UPDATE whatsapp_settings SET last_status=?, last_error=?, last_sent_at=? WHERE business_id=?", (status, error, sent_at, business_id)); c.commit(); c.close()
+
+def get_report_preferences(business_id, role):
+    c = _conn(); row = c.execute("SELECT * FROM report_preferences WHERE business_id=? AND role=?", (business_id, role)).fetchone(); c.close()
+    if not row: return {"enabled": True, "categories": []}
+    data=dict(row)
+    try: data["categories"] = json.loads(data.get("categories_json") or "[]")
+    except Exception: data["categories"]=[]
+    return data
+
+def save_report_preferences(business_id, role, enabled, categories):
+    c=_conn(); c.execute("INSERT INTO report_preferences (business_id,role,categories_json,enabled) VALUES (?,?,?,?) ON CONFLICT(business_id,role) DO UPDATE SET categories_json=excluded.categories_json,enabled=excluded.enabled", (business_id,role,json.dumps(categories),int(bool(enabled)))); c.commit(); c.close()

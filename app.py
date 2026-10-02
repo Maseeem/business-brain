@@ -9,6 +9,7 @@ from database import (
     authenticate_user, list_users, create_user, get_user, update_user, reset_user_password, update_business, log_activity, ensure_demo_users,
     get_daily_operations, list_products, update_product, bulk_add_products, get_sale, list_supplier_orders, approve_supplier_order,
     save_confirmed_sale, find_supplier, find_supplier_for_product, create_supplier_order,
+    get_whatsapp_settings, save_whatsapp_settings, update_whatsapp_status,
 )
 from agent import generate_sop_from_inputs, transcribe_audio_to_text
 from knowledge_agent import answer as answer_knowledge_question
@@ -18,6 +19,9 @@ from operations_agent import low_stock_items, supplier_draft, classify_operation
 from receipt_agent import verify_receipt
 from rag import ingest_knowledge_file, edit_knowledge_item, remove_knowledge_item, detect_knowledge_contradictions, index_process, bootstrap_index
 from ui import inject_css, sidebar, page_header, stat_card, empty_state, source_card
+from access_control import ROLE_PERMISSIONS, can as role_can, require as require_role
+from pdf_reports import build_sale_receipt_pdf, build_daily_report_pdf
+from whatsapp_service import configuration_status, test_connection, send_text, send_daily_report, build_daily_report, format_daily_report
 
 load_dotenv()
 init_db()
@@ -29,15 +33,15 @@ bootstrap_index()
 st.set_page_config(page_title="Business Brain", page_icon="◈", layout="wide", initial_sidebar_state="expanded")
 inject_css()
 
-ROLE_PERMISSIONS = {
-    "Owner": {"record": True, "knowledge": True, "edit": True, "users": True, "settings": True},
-    "Manager": {"record": True, "knowledge": True, "edit": True, "users": False, "settings": False},
-    "Employee": {"record": False, "knowledge": False, "edit": False, "users": False, "settings": False},
-}
-
 def can(action):
-    user = st.session_state.get("user") or {}
-    return ROLE_PERMISSIONS.get(user.get("role", "Employee"), {}).get(action, False)
+    return role_can(st.session_state.get("user") or {}, action)
+
+def require_permission(action):
+    try:
+        return require_role(st.session_state.get("user") or {}, action)
+    except PermissionError as exc:
+        st.error(str(exc))
+        st.stop()
 
 def current_business_id():
     return int((st.session_state.get("user") or {}).get("business_id") or 1)
@@ -207,7 +211,7 @@ def reset_active_sale_for_new_request():
     st.session_state.sale_last_id = None
 
 
-sidebar(business)
+sidebar(business, st.session_state.user.get("role", "Employee"))
 with st.sidebar:
     st.markdown(f"**{st.session_state.user['name']}**")
     st.caption(f"{st.session_state.user['role']} · @{st.session_state.user['username']}")
@@ -220,6 +224,17 @@ if st.session_state.get("notice"):
     st.success(st.session_state.notice); st.session_state.notice = None
 
 page = st.session_state.page
+_PAGE_PERMISSIONS = {
+    "Dashboard": "dashboard", "Smart Sale": "sales", "Inventory": "inventory", "Receipts": "receipts",
+    "Daily Operations": "daily_operations", "Ask Brain": "ask_brain", "Knowledge": "knowledge",
+    "Processes": "processes", "Process detail": "processes", "Record Process": "record_process",
+    "Activity": "activity", "Suppliers": "suppliers", "Settings": "settings", "WhatsApp": "whatsapp",
+}
+_required_page_permission = _PAGE_PERMISSIONS.get(page)
+if _required_page_permission and not can(_required_page_permission):
+    st.error("You do not have permission to access this page.")
+    st.session_state.page = "Dashboard" if can("dashboard") else "Smart Sale"
+    st.stop()
 
 # ---------- Dashboard ----------
 if page == "Dashboard":
@@ -734,7 +749,7 @@ elif page == "Smart Sale":
                 for item in sale["items"]:
                     st.markdown(f"<div class='receipt-row'><span><b>{item['name']}</b> × {float(item['quantity']):g}<br><span class='muted'>Rs. {float(item['unit_price']):,.2f} each</span></span><b>Rs. {float(item['subtotal']):,.2f}</b></div>", unsafe_allow_html=True)
                 st.markdown(f"<div class='receipt-total'><span>Total</span><span>Rs. {float(sale['total']):,.2f}</span></div></div>", unsafe_allow_html=True)
-                st.download_button("⬇️ Download Receipt", data=receipt_download_text(sale), file_name=f"{sale['transaction_ref']}_receipt.txt", mime="text/plain", use_container_width=True, key=f"download_receipt_{sale['id']}")
+                st.download_button("⬇️ Download Receipt", data=build_sale_receipt_pdf(sale, business, st.session_state.user), file_name=f"{sale['transaction_ref']}_receipt.pdf", mime="application/pdf", use_container_width=True, key=f"download_receipt_{sale['id']}")
             receipt_key = f"receipt_upload_{int(st.session_state.get('sale_receipt_widget_version', 0))}"
             receipt=st.file_uploader("Verify an uploaded receipt",type=["png","jpg","jpeg","webp"],key=receipt_key)
             if receipt and st.button("Verify Receipt",use_container_width=True):
@@ -1059,7 +1074,7 @@ elif page == "Daily Operations":
     st.markdown("### Recent sales")
     for sale in ops['recent_sales']:
         st.markdown(f"<div class='premium-card' style='margin:.45rem 0'><b>{sale['transaction_ref']}</b><div class='muted'>Rs. {sale['total']:,.2f} · {sale['status']} · {sale['created_at']}</div></div>",unsafe_allow_html=True)
-    if is_manager_or_owner():
+    if can("supplier_approve"):
         st.markdown("### Supplier actions")
         for order in list_supplier_orders(business_id,20):
             with st.container(border=True):
@@ -1089,7 +1104,7 @@ elif page == "Receipts":
             for item in sale['items']:
                 st.markdown(f"<div class='receipt-row'><span>{item['name']} × {float(item['quantity']):g}</span><span>Rs. {float(item['subtotal']):,.2f}</span></div>",unsafe_allow_html=True)
             st.markdown(f"<div class='receipt-total'><span>Total</span><span>Rs. {float(sale['total']):,.2f}</span></div></div>",unsafe_allow_html=True)
-            st.download_button("⬇️ Download Receipt",receipt_download_text(sale),file_name=f"{sale['transaction_ref']}_receipt.txt",mime="text/plain",use_container_width=True)
+            st.download_button("⬇️ Download Receipt",build_sale_receipt_pdf(sale,business,st.session_state.user),file_name=f"{sale['transaction_ref']}_receipt.pdf",mime="application/pdf",use_container_width=True)
             uploaded=st.file_uploader("Upload receipt image for verification",type=['png','jpg','jpeg','webp'],key=f"receipt_upload_{sale['id']}")
             if uploaded and st.button("Verify Receipt",type="primary",use_container_width=True):
                 try:
@@ -1125,7 +1140,7 @@ elif page == "Suppliers":
                 if supplier:
                     st.caption(f"Supplier: {supplier['name']} · contact: {supplier.get('contact','not provided')}")
                     qty=max(float(product['minimum_stock'])-float(product['stock_quantity']),1.0)
-                    if is_manager_or_owner() and st.button(f"Create reorder draft ({qty:g} {product['unit']})",key=f"reorder_{product['id']}"):
+                    if can("supplier_approve") and st.button(f"Create reorder draft ({qty:g} {product['unit']})",key=f"reorder_{product['id']}"):
                         try:
                             oid=create_supplier_order(supplier['id'],[{"product_id":product['id'],"quantity":qty,"unit_price":supplier.get('supplier_price')}],st.session_state.user['id'],business_id)
                             log_activity("Supplier order draft created",f"Order #{oid} · {supplier['name']} · {product['name']}",st.session_state.user['name'])
@@ -1144,6 +1159,76 @@ elif page == "Activity":
     page_header("Activity","See what was added or changed.","Workspace")
     for item in get_activity(100):
         st.markdown(f"<div class='activity-row'><div class='activity-dot'></div><div><b>{item['action']}</b><div class='muted'>{item['details']}</div><div class='tiny'>{item['created_at']}</div></div></div>",unsafe_allow_html=True)
+
+# ---------- WhatsApp ----------
+elif page == "WhatsApp":
+    require_permission("whatsapp")
+    business_id = current_business_id()
+    page_header("WhatsApp", "Configure admin-only daily reporting and test the WhatsApp Business connection.", "Admin")
+    settings = get_whatsapp_settings(business_id)
+    status = configuration_status()
+    st.markdown("### WhatsApp reporting")
+    if status["missing"]:
+        st.warning("WhatsApp Cloud API is not fully configured. Add the required Streamlit secrets/environment variables before sending messages.")
+        st.caption("Required: WHATSAPP_ACCESS_TOKEN, WHATSAPP_PHONE_NUMBER_ID, WHATSAPP_BUSINESS_ACCOUNT_ID")
+    else:
+        st.success("WhatsApp Cloud API configuration is available.")
+    with st.form("whatsapp_settings"):
+        enabled = st.checkbox("Enable daily reports", value=bool(settings.get("enabled")))
+        admin_recipients = st.text_area("Admin / Owner recipients", value=", ".join((settings.get("role_recipients") or {}).get("Owner", []) or (settings.get("recipients") or [])), placeholder="923001234567, 923001234568")
+        manager_recipients = st.text_area("Manager recipients", value=", ".join((settings.get("role_recipients") or {}).get("Manager", [])), placeholder="Optional")
+        employee_recipients = st.text_area("Employee recipients", value=", ".join((settings.get("role_recipients") or {}).get("Employee", [])), placeholder="Optional")
+        categories = st.multiselect("Report categories", ["sales", "inventory", "supplier", "receipts", "activity"], default=[x for x in settings.get("categories", []) if x in {"sales", "inventory", "supplier", "receipts", "activity"}] or ["sales", "inventory", "supplier", "receipts"])
+        saved = st.form_submit_button("Save WhatsApp settings", type="primary", use_container_width=True)
+    if saved:
+        role_recipients = {"Owner": [x.strip() for x in admin_recipients.split(",") if x.strip()], "Admin": [x.strip() for x in admin_recipients.split(",") if x.strip()], "Manager": [x.strip() for x in manager_recipients.split(",") if x.strip()], "Employee": [x.strip() for x in employee_recipients.split(",") if x.strip()]}
+        save_whatsapp_settings(business_id, enabled, role_recipients["Owner"], categories, role_recipients)
+        log_activity("WhatsApp settings updated", "Daily reporting settings changed", st.session_state.user["name"], business_id)
+        st.success("WhatsApp reporting settings saved.")
+        st.rerun()
+
+    st.markdown("### Test connection")
+    test_recipient = st.text_input("Test recipient", value=(settings.get("recipients") or [""])[0] if settings.get("recipients") else "")
+    if st.button("Send test message", use_container_width=True):
+        try:
+            result = test_connection(test_recipient)
+            update_whatsapp_status(business_id, "Success", "", __import__('datetime').datetime.now().isoformat(timespec="seconds"))
+            st.success("WhatsApp test message sent successfully.")
+        except Exception as exc:
+            update_whatsapp_status(business_id, "Failed", str(exc), "")
+            st.error(str(exc))
+
+    st.markdown("### Daily report")
+    role_for_report = st.selectbox("Report preview / manual send", ["Owner", "Manager", "Employee"], index=0)
+    preview_categories = {"Owner": ["sales", "inventory", "supplier", "receipts"], "Manager": ["inventory", "receipts"], "Employee": ["sales"]}[role_for_report]
+    report = build_daily_report(role_for_report, business_id, categories=preview_categories)
+    st.text(format_daily_report(report))
+    recipient_list = (settings.get("role_recipients") or {}).get(role_for_report, []) or ((settings.get("recipients") or []) if role_for_report in ("Owner", "Admin") else [])
+    if st.button("Send Daily Report Now", type="primary", use_container_width=True):
+        if not recipient_list:
+            st.error("No recipient is configured for this role.")
+        else:
+            successes = 0
+            errors = []
+            for recipient in recipient_list:
+                try:
+                    send_daily_report(role_for_report, business_id, recipient, include_pdf=True, categories=preview_categories)
+                    successes += 1
+                except Exception as exc:
+                    errors.append(str(exc))
+            if successes:
+                update_whatsapp_status(business_id, f"Sent to {successes} recipient(s)", "", __import__('datetime').datetime.now().isoformat(timespec="seconds"))
+                st.success(f"Daily report sent to {successes} recipient(s).")
+            if errors:
+                update_whatsapp_status(business_id, "Failed", "; ".join(errors)[:500], "")
+                st.error("One or more WhatsApp sends failed. Review the configuration and try again.")
+
+    st.download_button("Download role-scoped Daily Report PDF", data=build_daily_report_pdf(role_for_report, business_id, categories=preview_categories), file_name=f"daily_report_{__import__('datetime').datetime.now().date().isoformat()}_{role_for_report.lower()}.pdf", mime="application/pdf", use_container_width=True)
+
+    last_status = get_whatsapp_settings(business_id)
+    st.caption(f"Last send status: {last_status.get('last_status') or 'No sends yet'}")
+    if last_status.get("last_error"):
+        st.caption(f"Last error: {last_status['last_error']}")
 
 # ---------- Settings ----------
 elif page == "Settings":
