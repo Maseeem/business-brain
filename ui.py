@@ -360,6 +360,32 @@ def inject_css():
         -webkit-text-fill-color:#17212b !important;
         opacity:1 !important;
     }
+
+    /* ISSUE TYPE ONLY — selected value inside the issue-report selectbox */
+    [data-testid="stForm"] [data-testid="stSelectbox"] [data-baseweb="select"],
+    [data-testid="stForm"] [data-testid="stSelectbox"] [data-baseweb="select"] > div,
+    [data-testid="stForm"] [data-testid="stSelectbox"] [data-baseweb="select"] [role="combobox"] {
+        background:#ffffff !important;
+        color:#17212b !important;
+        opacity:1 !important;
+        visibility:visible !important;
+    }
+    [data-testid="stForm"] [data-testid="stSelectbox"] [data-baseweb="select"] div[class*="singleValue"],
+    [data-testid="stForm"] [data-testid="stSelectbox"] [data-baseweb="select"] div[class*="SingleValue"],
+    [data-testid="stForm"] [data-testid="stSelectbox"] [data-baseweb="select"] [aria-live="polite"],
+    [data-testid="stForm"] [data-testid="stSelectbox"] [data-baseweb="select"] span,
+    [data-testid="stForm"] [data-testid="stSelectbox"] [data-baseweb="select"] > div > div > div {
+        color:#17212b !important;
+        -webkit-text-fill-color:#17212b !important;
+        opacity:1 !important;
+        visibility:visible !important;
+        font-weight:600 !important;
+        text-shadow:0 0 0 #17212b !important;
+    }
+    [data-testid="stForm"] [data-testid="stSelectbox"] [data-baseweb="select"] svg {
+        color:#17212b !important;
+        fill:#17212b !important;
+    }
     </style>
     """,unsafe_allow_html=True)
 
