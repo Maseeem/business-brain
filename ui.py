@@ -13,6 +13,7 @@ NAV=[
     ("Activity","•"),
     ("Suppliers","⇄"),
     ("Settings","⚙"),
+    ("WhatsApp","📱"),
 ]
 
 def inject_css():
