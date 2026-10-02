@@ -281,6 +281,25 @@ def inject_css():
     [data-testid="stAppViewContainer"] div{
         --darkreader-text-color:#253247;
     }
+
+    /* DAILY REPORT ONLY — Streamlit st.text output */
+    [data-testid="stText"] {
+        background:#ffffff!important;
+        color:#253247!important;
+        opacity:1!important;
+        border:1px solid #e1e8e4!important;
+        border-radius:12px!important;
+    }
+    [data-testid="stText"] pre,
+    [data-testid="stText"] code,
+    [data-testid="stText"] div,
+    [data-testid="stText"] span {
+        background:#ffffff!important;
+        color:#253247!important;
+        -webkit-text-fill-color:#253247!important;
+        opacity:1!important;
+        text-shadow:none!important;
+    }
     </style>
     """,unsafe_allow_html=True)
 
