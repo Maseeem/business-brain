@@ -1293,7 +1293,7 @@ elif page == "WhatsApp":
     require_permission("whatsapp")
     business_id=current_business_id()
     role=st.session_state.user.get("role","Employee")
-    page_header("WhatsApp","Role-based reports, issue reporting and operational escalation.","WhatsApp")
+    page_header("WhatsApp","Role-based reports, issue reporting and operational escalation.","Business Communication")
     settings=get_whatsapp_settings(business_id)
     status=configuration_status()
     if status["missing"]:
