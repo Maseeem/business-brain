@@ -354,6 +354,19 @@ def inject_css():
         text-shadow:none !important;
     }
 
+    /* FINAL MICRO-FIX: selected value inside the closed selectbox must be visible. */
+    [data-baseweb="select"] [class*="singleValue"],
+    [data-baseweb="select"] [class*="SingleValue"],
+    [data-baseweb="select"] [aria-live="polite"],
+    [data-baseweb="select"] [role="combobox"] > div,
+    [data-baseweb="select"] [role="combobox"] > div > div {
+        color:#17212b !important;
+        -webkit-text-fill-color:#17212b !important;
+        opacity:1 !important;
+        visibility:visible !important;
+        text-shadow:none !important;
+    }
+
     /* Text must remain readable everywhere. */
     [data-testid="stAppViewContainer"] p,
     [data-testid="stAppViewContainer"] span,
