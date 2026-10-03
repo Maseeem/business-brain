@@ -234,26 +234,34 @@ def inject_css():
         color:#253247!important;
     }
 
-    /* Targeted selectbox readability only: keep the existing white control and dropdown. */
+    /* Selectboxes: white control + black selected/input text only. */
+    [data-baseweb="select"] > div,
     [data-baseweb="select"] [role="combobox"],
-    [data-baseweb="select"] [role="combobox"] *,
-    [data-baseweb="select"] > div > div > div,
-    [data-baseweb="select"] > div > div > div *{
-        color:#253247!important;
+    [data-baseweb="select"] [role="combobox"] > div{
+        background:#ffffff!important;
+        color:#000000!important;
         opacity:1!important;
-        -webkit-text-fill-color:#253247!important;
+        -webkit-text-fill-color:#000000!important;
+    }
+    [data-baseweb="select"] [role="combobox"] *,
+    [data-baseweb="select"] input,
+    [data-baseweb="select"] input + div,
+    [data-baseweb="select"] span{
+        color:#000000!important;
+        opacity:1!important;
+        -webkit-text-fill-color:#000000!important;
         text-shadow:none!important;
     }
     [data-baseweb="select"] svg{
-        color:#64748b!important;
-        fill:#64748b!important;
+        color:#000000!important;
+        fill:#000000!important;
     }
     [data-baseweb="select"] [role="listbox"],
     [data-baseweb="select"] [role="option"]{
         background:#ffffff!important;
-        color:#253247!important;
+        color:#000000!important;
         opacity:1!important;
-        -webkit-text-fill-color:#253247!important;
+        -webkit-text-fill-color:#000000!important;
     }
 
     /* ASK BRAIN / CHAT: force the chat composer and messages into the light theme. */
