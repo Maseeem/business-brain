@@ -234,6 +234,28 @@ def inject_css():
         color:#253247!important;
     }
 
+    /* Targeted selectbox readability only: keep the existing white control and dropdown. */
+    [data-baseweb="select"] [role="combobox"],
+    [data-baseweb="select"] [role="combobox"] *,
+    [data-baseweb="select"] > div > div > div,
+    [data-baseweb="select"] > div > div > div *{
+        color:#253247!important;
+        opacity:1!important;
+        -webkit-text-fill-color:#253247!important;
+        text-shadow:none!important;
+    }
+    [data-baseweb="select"] svg{
+        color:#64748b!important;
+        fill:#64748b!important;
+    }
+    [data-baseweb="select"] [role="listbox"],
+    [data-baseweb="select"] [role="option"]{
+        background:#ffffff!important;
+        color:#253247!important;
+        opacity:1!important;
+        -webkit-text-fill-color:#253247!important;
+    }
+
     /* ASK BRAIN / CHAT: force the chat composer and messages into the light theme. */
     [data-testid="stChatInput"],
     [data-testid="stChatInput"] > div,

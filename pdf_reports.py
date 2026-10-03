@@ -24,14 +24,14 @@ def _styles():
     return {
         "title": ParagraphStyle("ReceiptTitle", parent=base["Title"], fontSize=18, leading=22, textColor=colors.HexColor("#155c3b"), spaceAfter=5),
         "heading": ParagraphStyle("ReceiptHeading", parent=base["Heading2"], fontSize=11, leading=14, textColor=colors.HexColor("#155c3b"), spaceBefore=9, spaceAfter=5),
-        "body": ParagraphStyle("ReceiptBody", parent=base["BodyText"], fontSize=8.5, leading=11, textColor=colors.HexColor("#34443a")),
-        "small": ParagraphStyle("ReceiptSmall", parent=base["BodyText"], fontSize=7.5, leading=10, textColor=colors.HexColor("#66736b")),
+        "body": ParagraphStyle("ReceiptBody", parent=base["BodyText"], fontSize=8.5, leading=11, textColor=colors.HexColor("#202938")),
+        "small": ParagraphStyle("ReceiptSmall", parent=base["BodyText"], fontSize=7.5, leading=10, textColor=colors.HexColor("#52605a")),
     }
 
 
 def _table(data, widths=None, header=True):
     t = Table(data, colWidths=widths, repeatRows=1 if header else 0)
-    commands = [("GRID", (0,0), (-1,-1), 0.4, colors.HexColor("#dfe9e3")), ("VALIGN", (0,0), (-1,-1), "TOP"), ("FONTNAME", (0,0), (-1,0), "Helvetica-Bold"), ("BACKGROUND", (0,0), (-1,0), colors.HexColor("#eef8f2")), ("TEXTCOLOR", (0,0), (-1,-1), colors.HexColor("#34443a")), ("FONTSIZE", (0,0), (-1,-1), 7.5), ("BOTTOMPADDING", (0,0), (-1,-1), 5), ("TOPPADDING", (0,0), (-1,-1), 5)]
+    commands = [("GRID", (0,0), (-1,-1), 0.4, colors.HexColor("#dfe9e3")), ("VALIGN", (0,0), (-1,-1), "TOP"), ("FONTNAME", (0,0), (-1,0), "Helvetica-Bold"), ("BACKGROUND", (0,0), (-1,0), colors.HexColor("#eef8f2")), ("TEXTCOLOR", (0,0), (-1,-1), colors.HexColor("#202938")), ("FONTSIZE", (0,0), (-1,-1), 7.5), ("BOTTOMPADDING", (0,0), (-1,-1), 5), ("TOPPADDING", (0,0), (-1,-1), 5)]
     if not header:
         commands = commands[0:2] + commands[2:]
     t.setStyle(TableStyle(commands))

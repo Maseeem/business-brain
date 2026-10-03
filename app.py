@@ -12,7 +12,7 @@ from database import (
     save_confirmed_sale, find_supplier, find_supplier_for_product, create_supplier_order,
     create_missing_product_request, list_missing_product_requests, review_missing_product_request,
     create_whatsapp_issue_report, list_whatsapp_issue_reports, review_whatsapp_issue_report,
-    get_whatsapp_settings, save_whatsapp_settings, update_whatsapp_status,
+    get_whatsapp_settings, save_whatsapp_settings, update_whatsapp_status, deactivate_product,
 )
 from agent import generate_sop_from_inputs, transcribe_audio_to_text
 from knowledge_agent import answer as answer_knowledge_question
@@ -922,6 +922,37 @@ elif page == "Inventory":
                     except Exception:
                         st.error("Product could not be updated. Please check the price and stock values.")
 
+                if can("inventory_remove"):
+                    confirm_key = f"confirm_remove_inventory_{product['id']}"
+                    if st.button("Remove from Inventory", key=f"remove_inventory_{product['id']}", use_container_width=True):
+                        st.session_state[confirm_key] = True
+                        st.rerun()
+                    if st.session_state.get(confirm_key):
+                        st.warning("Are you sure you want to remove this product from active inventory?")
+                        rc1, rc2 = st.columns(2)
+                        with rc1:
+                            if st.button("Confirm", key=f"confirm_remove_{product['id']}", type="primary", use_container_width=True):
+                                require_permission("inventory_remove")
+                                try:
+                                    removed = deactivate_product(product["id"], business_id=business_id, actor_role=st.session_state.user.get("role"))
+                                    if removed:
+                                        log_activity("Product removed from inventory", f"{product['name']} deactivated from active catalog", st.session_state.user["name"], business_id)
+                                        st.session_state.pop(confirm_key, None)
+                                        st.success(f"{product['name']} removed from active inventory.")
+                                        st.rerun()
+                                    else:
+                                        st.session_state.pop(confirm_key, None)
+                                        st.warning("Product is already inactive.")
+                                        st.rerun()
+                                except PermissionError as exc:
+                                    st.error(str(exc))
+                                except Exception:
+                                    st.error("Product could not be removed from active inventory.")
+                        with rc2:
+                            if st.button("Cancel", key=f"cancel_remove_{product['id']}", use_container_width=True):
+                                st.session_state.pop(confirm_key, None)
+                                st.rerun()
+
     st.markdown("### Add products")
     st.caption("Add one product per line. Business Brain will create the catalog records without inventing prices.")
     with st.form("bulk_add_inventory"):
@@ -1367,10 +1398,7 @@ elif page == "WhatsApp":
 
     if role in {"Manager","Employee"}:
         st.markdown("### ⚠️ Report an Issue")
-        if role=="Manager":
-            issue_types=["Inventory Problem","Low Stock Problem","Supplier Problem","Receipt Problem","Operational Problem","Other"]
-        else:
-            issue_types=["Missing Product","Stock Problem","Customer Issue","Order Issue","Sales Problem","Other"]
+        issue_types=["Inventory Problem","Stock Problem","Customer Issue","Order Issue","Sales Problem","Other"]
         with st.form(f"issue_form_{role.lower()}"):
             issue_type=st.selectbox("Issue type",issue_types)
             description=st.text_area("Describe the issue",placeholder="Explain what happened and what help is needed.")

@@ -776,6 +776,33 @@ def update_product(product_id, name=None, price=None, unit=None, stock_quantity=
     finally: c.close()
 
 
+def deactivate_product(product_id, business_id=1, actor_role=""):
+    """Safely remove a product from active catalog without deleting history.
+
+    This is intentionally server-side: only Owner/Manager/Admin may deactivate,
+    and the business_id predicate preserves tenant isolation. Historical sales,
+    receipts, supplier references and audit rows remain intact.
+    """
+    role = str(actor_role or "")
+    if role not in {"Owner", "Manager", "Admin"}:
+        raise PermissionError("You do not have permission to remove products from inventory.")
+    c = _conn(); now = datetime.now().isoformat(timespec="seconds")
+    try:
+        row = c.execute("SELECT id,name,active FROM products WHERE id=? AND business_id=?", (int(product_id), int(business_id))).fetchone()
+        if not row:
+            raise ValueError("Product not found.")
+        if not int(row["active"] or 0):
+            return False
+        cur = c.execute("UPDATE products SET active=0, updated_at=? WHERE id=? AND business_id=?", (now, int(product_id), int(business_id)))
+        c.commit()
+        return cur.rowcount > 0
+    except Exception:
+        c.rollback()
+        raise
+    finally:
+        c.close()
+
+
 def bulk_add_products(names, business_id=1):
     created=[]; existing=[]
     for raw in names:
