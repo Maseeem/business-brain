@@ -274,31 +274,39 @@ def inject_css():
         color:#253247!important;
     }
 
+    /* FINAL SELECTBOX FIX — selected value inside the closed white box. */
+    [data-baseweb="select"] [class*="singleValue"],
+    [data-baseweb="select"] [class*="SingleValue"],
+    [data-baseweb="select"] [role="combobox"],
+    [data-baseweb="select"] [role="combobox"] > div,
+    [data-baseweb="select"] [role="combobox"] > div > div,
+    [data-baseweb="select"] [role="combobox"] div,
+    [data-baseweb="select"] [role="combobox"] span,
+    [data-baseweb="select"] [aria-live="polite"] {
+        color:#253247 !important;
+        -webkit-text-fill-color:#253247 !important;
+        opacity:1 !important;
+        visibility:visible !important;
+        text-shadow:none !important;
+    }
+    [data-baseweb="select"] [aria-live="polite"] * {
+        color:#253247 !important;
+        -webkit-text-fill-color:#253247 !important;
+        opacity:1 !important;
+    }
+    [data-baseweb="select"] input {
+        color:#253247 !important;
+        -webkit-text-fill-color:#253247 !important;
+        caret-color:#253247 !important;
+        opacity:1 !important;
+    }
+
     /* Text must remain readable everywhere. */
     [data-testid="stAppViewContainer"] p,
     [data-testid="stAppViewContainer"] span,
     [data-testid="stAppViewContainer"] label,
     [data-testid="stAppViewContainer"] div{
         --darkreader-text-color:#253247;
-    }
-
-    /* DAILY REPORT ONLY — Streamlit st.text output */
-    [data-testid="stText"] {
-        background:#ffffff!important;
-        color:#253247!important;
-        opacity:1!important;
-        border:1px solid #e1e8e4!important;
-        border-radius:12px!important;
-    }
-    [data-testid="stText"] pre,
-    [data-testid="stText"] code,
-    [data-testid="stText"] div,
-    [data-testid="stText"] span {
-        background:#ffffff!important;
-        color:#253247!important;
-        -webkit-text-fill-color:#253247!important;
-        opacity:1!important;
-        text-shadow:none!important;
     }
     </style>
     """,unsafe_allow_html=True)
