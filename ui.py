@@ -321,6 +321,32 @@ def inject_css():
         -webkit-text-fill-color:#253247 !important;
         caret-color:#253247 !important;
         opacity:1 !important;
+        visibility:visible !important;
+    }
+    /* React-Select/BaseWeb selected value can sit outside the combobox node. */
+    [data-baseweb="select"] [class*="singleValue"],
+    [data-baseweb="select"] [class*="SingleValue"],
+    [data-baseweb="select"] [class*="valueContainer"] *,
+    [data-baseweb="select"] [class*="ValueContainer"] *,
+    [data-baseweb="select"] [class*="inputContainer"] *,
+    [data-baseweb="select"] [aria-live="polite"],
+    [data-baseweb="select"] [aria-live="polite"] * {
+        color:#253247 !important;
+        -webkit-text-fill-color:#253247 !important;
+        opacity:1 !important;
+        visibility:visible !important;
+        background-color:transparent !important;
+    }
+
+    /* Daily report preview: targeted only to Streamlit's text output. */
+    [data-testid="stText"],
+    [data-testid="stText"] pre,
+    [data-testid="stText"] div {
+        color:#202938 !important;
+        -webkit-text-fill-color:#202938 !important;
+        opacity:1 !important;
+        visibility:visible !important;
+        background:#ffffff !important;
     }
 
     /* Text must remain readable everywhere. */
