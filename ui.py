@@ -227,7 +227,7 @@ def inject_css():
     [data-baseweb="select"] > div > div,
     [data-baseweb="select"] [role="combobox"]{
         background:#ffffff!important;
-        color:#000000!important;
+        color:#253247!important;
         border-color:#dce3eb!important;
         opacity:1!important;
         -webkit-text-fill-color:#000000!important;
@@ -237,21 +237,21 @@ def inject_css():
     [data-baseweb="select"] [role="combobox"] span,
     [data-baseweb="select"] [role="combobox"] div,
     [data-baseweb="select"] input{
-        color:#000000!important;
+        color:#253247!important;
         opacity:1!important;
-        -webkit-text-fill-color:#000000!important;
+        -webkit-text-fill-color:#253247!important;
         text-shadow:none!important;
     }
     [data-baseweb="select"] input{
         background:#ffffff!important;
-        caret-color:#000000!important;
+        caret-color:#253247!important;
     }
     [data-baseweb="select"] [role="listbox"],
     [data-baseweb="select"] [role="option"]{
         background:#ffffff!important;
-        color:#000000!important;
+        color:#253247!important;
         opacity:1!important;
-        -webkit-text-fill-color:#000000!important;
+        -webkit-text-fill-color:#253247!important;
     }
     [data-baseweb="select"] svg{
         color:#64748b!important;
