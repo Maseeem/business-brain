@@ -13,6 +13,7 @@ NAV=[
     ("Activity","•"),
     ("Suppliers","⇄"),
     ("Settings","⚙"),
+    ("WhatsApp","📱"),
 ]
 
 def inject_css():
@@ -222,48 +223,45 @@ def inject_css():
         background:#eef8f2!important;
         color:#176b46!important;
     }
-    /* Selectboxes: keep the control white and force the selected value to stay visible. */
     [data-baseweb="select"] > div,
-    [data-baseweb="select"] > div > div,
-    [data-baseweb="select"] [role="combobox"]{
-        background:#ffffff!important;
-        color:#253247!important;
-        border-color:#dce3eb!important;
-        opacity:1!important;
-        -webkit-text-fill-color:#000000!important;
-        text-shadow:none!important;
-    }
-    [data-baseweb="select"] [role="combobox"] *,
-    [data-baseweb="select"] [role="combobox"] span,
-    [data-baseweb="select"] [role="combobox"] div,
-    [data-baseweb="select"] input{
-        color:#253247!important;
-        opacity:1!important;
-        -webkit-text-fill-color:#253247!important;
-        text-shadow:none!important;
-    }
-    [data-baseweb="select"] input{
-        background:#ffffff!important;
-        caret-color:#253247!important;
-    }
-    [data-baseweb="select"] [role="listbox"],
-    [data-baseweb="select"] [role="option"]{
-        background:#ffffff!important;
-        color:#253247!important;
-        opacity:1!important;
-        -webkit-text-fill-color:#253247!important;
-    }
-    [data-baseweb="select"] svg{
-        color:#64748b!important;
-        fill:#64748b!important;
-    }
     [data-baseweb="input"] > div{
         background:#ffffff!important;
         color:#253247!important;
         border-color:#dce3eb!important;
     }
+    [data-baseweb="select"] input,
     [data-baseweb="input"] input{
         color:#253247!important;
+    }
+
+    /* Selectboxes: white control + black selected/input text only. */
+    [data-baseweb="select"] > div,
+    [data-baseweb="select"] [role="combobox"],
+    [data-baseweb="select"] [role="combobox"] > div{
+        background:#ffffff!important;
+        color:#000000!important;
+        opacity:1!important;
+        -webkit-text-fill-color:#000000!important;
+    }
+    [data-baseweb="select"] [role="combobox"] *,
+    [data-baseweb="select"] input,
+    [data-baseweb="select"] input + div,
+    [data-baseweb="select"] span{
+        color:#000000!important;
+        opacity:1!important;
+        -webkit-text-fill-color:#000000!important;
+        text-shadow:none!important;
+    }
+    [data-baseweb="select"] svg{
+        color:#000000!important;
+        fill:#000000!important;
+    }
+    [data-baseweb="select"] [role="listbox"],
+    [data-baseweb="select"] [role="option"]{
+        background:#ffffff!important;
+        color:#000000!important;
+        opacity:1!important;
+        -webkit-text-fill-color:#000000!important;
     }
 
     /* ASK BRAIN / CHAT: force the chat composer and messages into the light theme. */
@@ -304,6 +302,59 @@ def inject_css():
     textarea{
         background:#ffffff!important;
         color:#253247!important;
+    }
+
+    /* FINAL SELECTBOX FIX — selected value inside the closed white box. */
+    [data-baseweb="select"] [class*="singleValue"],
+    [data-baseweb="select"] [class*="SingleValue"],
+    [data-baseweb="select"] [role="combobox"],
+    [data-baseweb="select"] [role="combobox"] > div,
+    [data-baseweb="select"] [role="combobox"] > div > div,
+    [data-baseweb="select"] [role="combobox"] div,
+    [data-baseweb="select"] [role="combobox"] span,
+    [data-baseweb="select"] [aria-live="polite"] {
+        color:#253247 !important;
+        -webkit-text-fill-color:#253247 !important;
+        opacity:1 !important;
+        visibility:visible !important;
+        text-shadow:none !important;
+    }
+    [data-baseweb="select"] [aria-live="polite"] * {
+        color:#253247 !important;
+        -webkit-text-fill-color:#253247 !important;
+        opacity:1 !important;
+    }
+    [data-baseweb="select"] input {
+        color:#253247 !important;
+        -webkit-text-fill-color:#253247 !important;
+        caret-color:#253247 !important;
+        opacity:1 !important;
+        visibility:visible !important;
+    }
+    /* React-Select/BaseWeb selected value can sit outside the combobox node. */
+    [data-baseweb="select"] [class*="singleValue"],
+    [data-baseweb="select"] [class*="SingleValue"],
+    [data-baseweb="select"] [class*="valueContainer"] *,
+    [data-baseweb="select"] [class*="ValueContainer"] *,
+    [data-baseweb="select"] [class*="inputContainer"] *,
+    [data-baseweb="select"] [aria-live="polite"],
+    [data-baseweb="select"] [aria-live="polite"] * {
+        color:#253247 !important;
+        -webkit-text-fill-color:#253247 !important;
+        opacity:1 !important;
+        visibility:visible !important;
+        background-color:transparent !important;
+    }
+
+    /* Daily report preview: targeted only to Streamlit's text output. */
+    [data-testid="stText"],
+    [data-testid="stText"] pre,
+    [data-testid="stText"] div {
+        color:#202938 !important;
+        -webkit-text-fill-color:#202938 !important;
+        opacity:1 !important;
+        visibility:visible !important;
+        background:#ffffff !important;
     }
 
     /* Text must remain readable everywhere. */
